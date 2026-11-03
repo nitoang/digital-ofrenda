@@ -16,7 +16,7 @@
 (() => {
   const ITEMS = {
     photo:    { emoji: '🖼️', label: 'Photo frame' },
-    candle:   { emoji: '🕯️', label: 'Candle' },
+    candle:   { emoji: '🕯️', label: 'Candle', candle: true },
     marigold: { emoji: '🌼', label: 'Marigold' },
     skull:    { emoji: '💀', label: 'Sugar skull' },
     pan:      { emoji: '🍞', label: 'Pan de muerto' },
@@ -30,6 +30,28 @@
     music:    { emoji: '🎵', label: 'Favorite song' },
     heart:    { emoji: '❤️', label: 'Heart' },
     note:     { emoji: '📝', label: 'Note card' },
+    // Added from community research (r/AskMexico, r/mexico, r/Dia_de_Muertos)
+    led:      { emoji: '🕯️', label: 'LED candle (pet/kid safe)', candle: true },
+    petals:   { emoji: '🏵️', label: 'Marigold petal path' },
+    papel:    { emoji: '🎏', label: 'Papel picado' },
+    copal:    { emoji: '🏺', label: 'Copal / incense' },
+    salt:     { emoji: '🧂', label: 'Salt' },
+    mole:     { emoji: '🍛', label: 'Mole' },
+    flan:     { emoji: '🍮', label: 'Flan' },
+    jamaica:  { emoji: '🍹', label: 'Agua de Jamaica' },
+    soda:     { emoji: '🥤', label: 'Coke / soda' },
+    liquor:   { emoji: '🥃', label: 'Tequila / mezcal / scotch' },
+    beer:     { emoji: '🍺', label: 'Beer' },
+    cigs:     { emoji: '🚬', label: 'Cigarettes' },
+    guitar:   { emoji: '🎸', label: 'Guitar / pick' },
+    domino:   { emoji: '🎲', label: 'Dominoes / games' },
+    jersey:   { emoji: '👕', label: 'Soccer jersey' },
+    cleats:   { emoji: '⚽', label: 'Cleats / ball' },
+    toy:      { emoji: '🧸', label: 'Toy (for children)' },
+    bowl:     { emoji: '🥣', label: 'Pet water bowl' },
+    kibble:   { emoji: '🦴', label: 'Pet treat / kibble' },
+    collar:   { emoji: '🏷️', label: 'Collar / tag' },
+    xolo:     { emoji: '🐕‍🦺', label: 'Xoloitzcuintli guide' },
   };
 
   const DEFAULT_NOTE = 'Siempre en nuestro corazón';
@@ -90,6 +112,8 @@
     .frame span { color: #7a5a1a; font-size: 1.9cqw; text-align: center; padding: 1cqw; font-family: system-ui, sans-serif; }
     .editing .item.photo { cursor: grab; }
 
+    .papel { display: flex; gap: .5cqw; padding-top: .8cqw; border-top: .4cqw solid #fdf3e3; }
+    .papel i { width: 4.2cqw; height: 5.5cqw; opacity: .92; clip-path: polygon(0 0, 100% 0, 100% 78%, 80% 62%, 60% 100%, 40% 62%, 20% 100%, 0 78%); }
     .note { max-width: 24cqw; background: #fff6d6; color: #3a2a10; padding: 1.2cqw 1.6cqw; font-size: 2.2cqw; line-height: 1.25;
             border-radius: 3px; box-shadow: 0 .5cqw 1.4cqw rgba(0,0,0,.45); transform: rotate(-2deg); text-align: center; }
     .note span { display: block; min-width: 4ch; }
@@ -229,7 +253,7 @@
     _makeEl(item) {
       const def = ITEMS[item.type];
       const el = document.createElement('div');
-      el.className = 'item ' + item.type + (item.lit ? ' lit' : '');
+      el.className = 'item ' + item.type + (def.candle ? ' candle' : '') + (item.lit ? ' lit' : '');
       el.dataset.id = item.id;
       el.tabIndex = 0;
       el.setAttribute('role', 'img');
@@ -243,6 +267,12 @@
         const n = document.createElement('div'); n.className = 'note';
         const s = document.createElement('span'); s.textContent = item.text ?? DEFAULT_NOTE;
         n.appendChild(s); el.appendChild(n);
+      } else if (item.type === 'papel') {
+        const p = document.createElement('div'); p.className = 'papel';
+        for (const c of ['#ff4fa3', '#ff9a3c', '#2ec4b6', '#ffd23f', '#9b5de5']) {
+          const i = document.createElement('i'); i.style.background = c; p.appendChild(i);
+        }
+        el.appendChild(p);
       } else {
         const s = document.createElement('span'); s.className = 'emoji'; s.textContent = def.emoji; el.appendChild(s);
       }
@@ -257,7 +287,7 @@
 
     _label(el, item) {
       const base = ITEMS[item.type].label;
-      const extra = item.type === 'candle' ? (item.lit ? ', lit' : ', unlit') : item.type === 'note' ? ': ' + (item.text ?? DEFAULT_NOTE) : '';
+      const extra = ITEMS[item.type].candle ? (item.lit ? ', lit' : ', unlit') : item.type === 'note' ? ': ' + (item.text ?? DEFAULT_NOTE) : '';
       el.setAttribute('aria-label', base + extra);
     }
 
@@ -269,7 +299,7 @@
 
     _add(type, x, y) {
       const item = { id: uid(), type, x: clamp(x, 4, 96), y: clamp(y, 12, 96) };
-      if (type === 'candle') item.lit = true;
+      if (ITEMS[type].candle) item.lit = true;
       if (type === 'note') item.text = DEFAULT_NOTE;
       this._state.items.push(item);
       const el = this._makeEl(item);
@@ -290,7 +320,7 @@
     }
 
     _activate(el, item) {
-      if (item.type === 'candle') {
+      if (ITEMS[item.type].candle) {
         item.lit = !item.lit;
         el.classList.toggle('lit', item.lit);
         this._label(el, item);
@@ -343,7 +373,7 @@
     _itemKey(e, el, item) {
       if (e.target !== el) return;
       const activate = e.key === 'Enter' || e.key === ' ';
-      if (activate && (item.type === 'candle' || (item.type === 'photo' && this._editable))) {
+      if (activate && (ITEMS[item.type].candle || (item.type === 'photo' && this._editable))) {
         e.preventDefault(); this._activate(el, item); return;
       }
       if (!this._editable) return;
