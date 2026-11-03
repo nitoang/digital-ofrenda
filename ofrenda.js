@@ -9,6 +9,7 @@
  * Attributes:
  *   id    unique key used for saving (one per ofrenda)
  *   mode  "edit" (drag, drop, personalize) or "view" (default; visitors can light candles)
+ *   Edit mode also lets you choose a Person, Pet or Mixed ofrenda (saved as state.kind).
  *
  * Events:
  *   ofrenda-change  fired after every saved change, detail = the full state object
@@ -26,7 +27,7 @@
     treat:    { emoji: '🍫', label: 'Favorite treat' },
     tamal:    { emoji: '🫔', label: 'Tamal' },
     butterfly:{ emoji: '🦋', label: 'Monarch butterfly' },
-    dog:      { emoji: '🐕', label: 'Loyal companion' },
+    dog:      { emoji: '🐕', label: 'Loyal companion', for: 'pet' },
     music:    { emoji: '🎵', label: 'Favorite song' },
     heart:    { emoji: '❤️', label: 'Heart' },
     note:     { emoji: '📝', label: 'Note card' },
@@ -40,19 +41,28 @@
     flan:     { emoji: '🍮', label: 'Flan' },
     jamaica:  { emoji: '🍹', label: 'Agua de Jamaica' },
     soda:     { emoji: '🥤', label: 'Coke / soda' },
-    liquor:   { emoji: '🥃', label: 'Tequila / mezcal / scotch' },
-    beer:     { emoji: '🍺', label: 'Beer' },
-    cigs:     { emoji: '🚬', label: 'Cigarettes' },
-    guitar:   { emoji: '🎸', label: 'Guitar / pick' },
-    domino:   { emoji: '🎲', label: 'Dominoes / games' },
-    jersey:   { emoji: '👕', label: 'Soccer jersey' },
-    cleats:   { emoji: '⚽', label: 'Cleats / ball' },
+    liquor:   { emoji: '🥃', label: 'Tequila / mezcal / scotch', for: 'person' },
+    beer:     { emoji: '🍺', label: 'Beer', for: 'person' },
+    cigs:     { emoji: '🚬', label: 'Cigarettes', for: 'person' },
+    guitar:   { emoji: '🎸', label: 'Guitar / pick', for: 'person' },
+    domino:   { emoji: '🎲', label: 'Dominoes / games', for: 'person' },
+    jersey:   { emoji: '👕', label: 'Soccer jersey', for: 'person' },
+    cleats:   { emoji: '⚽', label: 'Cleats / ball', for: 'person' },
     toy:      { emoji: '🧸', label: 'Toy (for children)' },
-    bowl:     { emoji: '🥣', label: 'Pet water bowl' },
-    kibble:   { emoji: '🦴', label: 'Pet treat / kibble' },
-    collar:   { emoji: '🏷️', label: 'Collar / tag' },
-    xolo:     { emoji: '🐕‍🦺', label: 'Xoloitzcuintli guide' },
+    bowl:     { emoji: '🥣', label: 'Pet water bowl', for: 'pet' },
+    kibble:   { emoji: '🦴', label: 'Pet treat / kibble', for: 'pet' },
+    collar:   { emoji: '🏷️', label: 'Collar / tag', for: 'pet' },
+    xolo:     { emoji: '🐕‍🦺', label: 'Xoloitzcuintli guide', for: 'pet' },
   };
+
+  // Which kind of ofrenda this is. Items with `for` are only offered in the matching kinds.
+  const KINDS = {
+    person: { label: 'Person',  placeholder: 'Name of your loved one' },
+    pet:    { label: 'Pet',     placeholder: 'Name of your pet' },
+    mixed:  { label: 'Mixed',   placeholder: 'Names of your loved ones' },
+  };
+  const PET_NOTE = 'Pet safety: keep chocolate, grapes and sugar skulls out of reach of living pets, and skip lilies if you have a cat.';
+  const offered = (type, kind) => { const f = ITEMS[type].for; return !f || kind === 'mixed' || f === kind; };
 
   const DEFAULT_NOTE = 'Siempre en nuestro corazón';
   const PHOTO_MAX_PX = 480;
@@ -60,6 +70,7 @@
   const uid = () => Math.random().toString(36).slice(2, 10);
 
   const defaultState = () => ({
+    kind: 'person',
     name: '',
     dates: '',
     photo: null,
@@ -118,6 +129,13 @@
             border-radius: 3px; box-shadow: 0 .5cqw 1.4cqw rgba(0,0,0,.45); transform: rotate(-2deg); text-align: center; }
     .note span { display: block; min-width: 4ch; }
 
+    .kind { display: flex; justify-content: center; gap: 6px; margin: 0 0 12px; padding: 0; border: 0; font-family: system-ui, sans-serif; }
+    .kind legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .kind label { cursor: pointer; padding: 6px 14px; border-radius: 999px; border: 1px solid rgba(253,243,227,.4); font-size: .8rem; }
+    .kind input { position: absolute; opacity: 0; pointer-events: none; }
+    .kind label:has(input:checked) { background: #e0742e; border-color: #e0742e; color: #fff; }
+    .kind label:has(input:focus-visible) { outline: 3px solid #ffd45c; outline-offset: 2px; }
+    .petnote { margin: 8px 0 0; font-family: system-ui, sans-serif; font-size: .75rem; opacity: .8; }
     .tray { margin-top: 14px; padding: 12px; border-radius: 10px; background: #3a2158; border: 2px dashed transparent; transition: border-color .15s, background .15s; }
     .tray.danger { border-color: #ff6b6b; background: #5a2140; }
     .tray h3 { margin: 0 0 8px; font-size: .85rem; font-weight: normal; opacity: .75; font-family: system-ui, sans-serif; }
@@ -180,8 +198,12 @@
       this._root.innerHTML = `
         <style>${css}</style>
         <div class="wrap">
+          <fieldset class="kind">
+            <legend>Type of ofrenda</legend>
+            ${Object.entries(KINDS).map(([k, d]) => `<label><input type="radio" name="kind" value="${k}">${d.label}</label>`).join('')}
+          </fieldset>
           <header>
-            <h2 class="name" data-placeholder="Name of your loved one"></h2>
+            <h2 class="name" data-placeholder=""></h2>
             <p class="dates" data-placeholder="Dates (e.g. 1948 – 2024)"></p>
           </header>
           <div class="stage" role="group" aria-label="Ofrenda altar">
@@ -192,6 +214,7 @@
           <div class="tray">
             <h3>Drag an item onto the altar (or press Enter to add it). Drag items here to remove them.</h3>
             <div class="tray-items"></div>
+            <p class="petnote" hidden></p>
             <div class="actions">
               <button type="button" class="photo-btn">Add photo</button>
               <button type="button" class="ghost-btn reset-btn">Start over</button>
@@ -206,18 +229,13 @@
       this._wrap = $('.wrap'); this._stage = $('.stage'); this._itemsEl = $('.items');
       this._tray = $('.tray'); this._status = $('.status'); this._file = $('input[type=file]');
       this._nameEl = $('.name'); this._datesEl = $('.dates');
-
-      const trayItems = $('.tray-items');
-      for (const [type, def] of Object.entries(ITEMS)) {
-        const b = document.createElement('button');
-        b.type = 'button'; b.dataset.type = type;
-        b.innerHTML = `<b>${def.emoji}</b>${def.label}`;
-        b.addEventListener('pointerdown', e => this._trayDown(e, type));
-        b.addEventListener('keydown', e => {
-          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._add(type, 45 + Math.random() * 10, 45 + Math.random() * 10); }
-        });
-        trayItems.appendChild(b);
-      }
+      this._kindEl = $('.kind'); this._petNote = $('.petnote'); this._trayItems = $('.tray-items');
+      this._kindEl.addEventListener('change', e => {
+        if (!KINDS[e.target.value]) return;
+        this._state.kind = e.target.value;
+        this._save();
+        this._render();
+      });
 
       $('.photo-btn').addEventListener('click', () => this._file.click());
       $('.reset-btn').addEventListener('click', () => {
@@ -235,8 +253,33 @@
       }
     }
 
+    _buildTray() {
+      const kind = this._kind;
+      this._trayItems.textContent = '';
+      for (const [type, def] of Object.entries(ITEMS)) {
+        if (!offered(type, kind)) continue;
+        const b = document.createElement('button');
+        b.type = 'button'; b.dataset.type = type;
+        b.innerHTML = `<b>${def.emoji}</b>${def.label}`;
+        b.addEventListener('pointerdown', e => this._trayDown(e, type));
+        b.addEventListener('keydown', e => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._add(type, 45 + Math.random() * 10, 45 + Math.random() * 10); }
+        });
+        this._trayItems.appendChild(b);
+      }
+      this._petNote.textContent = PET_NOTE;
+      this._petNote.hidden = kind === 'person';
+    }
+
+    get _kind() { return KINDS[this._state.kind] ? this._state.kind : 'person'; }
+
     _render() {
       const edit = this._editable;
+      const kind = this._kind;
+      this._kindEl.hidden = !edit;
+      for (const r of this._kindEl.querySelectorAll('input')) r.checked = r.value === kind;
+      this._nameEl.dataset.placeholder = KINDS[kind].placeholder;
+      this._buildTray();
       this._wrap.classList.toggle('editing', edit);
       this._tray.hidden = !edit;
       for (const el of [this._nameEl, this._datesEl]) el.contentEditable = edit ? 'true' : 'false';
