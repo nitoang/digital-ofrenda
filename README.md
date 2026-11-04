@@ -21,3 +21,23 @@ el.importState(JSON.parse(json));                 // true on success, false if n
 ```
 
 Imported data is treated as untrusted: unknown item types are dropped, positions are clamped, text is length-limited, and each photo must be an inline image (remote URLs are rejected). Files exported before multiple photos (a single top-level `photo`) still import.
+
+## Seven tiers (optional upgrade)
+
+Altars have 3 tiers by default. Edit mode also offers a traditional 7-tier altar (saved as `state.tiers`), but it is off unless the host page enables it. The component takes no payments, so the host decides who gets it:
+
+```html
+<digital-ofrenda id="maria" mode="edit" seven-tiers></digital-ofrenda>
+```
+
+```js
+DigitalOfrenda.features = { sevenTiers: true };   // or enable it for every altar on the page
+```
+
+With it off, the selector shows "7 tiers (upgrade)". Choosing it leaves the altar at 3 tiers and fires a bubbling `upgrade-request` event (`detail.feature === 'sevenTiers'`) for the host to answer, for example by opening a paywall:
+
+```js
+document.addEventListener('upgrade-request', e => showPricing(e.detail.feature));
+```
+
+A saved or imported 7-tier altar shows as 3 tiers while the feature is off. The setting is kept, so enabling it later restores the 7 tiers.

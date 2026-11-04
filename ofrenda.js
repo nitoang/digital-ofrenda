@@ -99,6 +99,12 @@
     return state;
   };
 
+  // Tier layouts: [top %, width %, color]. Three is the default; seven is an optional upgrade.
+  const TIERS = {
+    3: [[14, 52, '#e0742e'], [42, 78, '#c2417f'], [66, 100, '#6c3bb0']],
+    7: [[13, 26, '#f2c14e'], [24, 38, '#e0742e'], [35, 50, '#d9534f'], [46, 62, '#c2417f'], [57, 74, '#9b5de5'], [68, 87, '#6c3bb0'], [79, 100, '#3f6fb5']],
+  };
+
   // Turn untrusted data (e.g. an imported file) into a safe state object, or null if it isn't an ofrenda.
   const sanitize = data => {
     if (!data || typeof data !== 'object' || data.format !== FORMAT || !Array.isArray(data.items)) return null;
@@ -115,7 +121,7 @@
       if (raw.type === 'photo' && isImage(raw.src)) item.src = raw.src;
       items.push(item);
     }
-    const state = { kind: KINDS[data.kind] ? data.kind : 'person', name: str(data.name, 80), dates: str(data.dates, 80), items };
+    const state = { kind: KINDS[data.kind] ? data.kind : 'person', tiers: data.tiers === 7 ? 7 : 3, name: str(data.name, 80), dates: str(data.dates, 80), items };
     // Files exported before multiple photos kept one top-level photo.
     if (isImage(data.photo)) state.photo = data.photo;
     return migratePhoto(state);
@@ -123,6 +129,7 @@
 
   const defaultState = () => ({
     kind: 'person',
+    tiers: 3,
     name: '',
     dates: '',
     items: [
@@ -152,9 +159,8 @@
     .banner { position: absolute; inset: 0 0 auto 0; height: 9%; display: flex; }
     .banner i { flex: 1; clip-path: polygon(0 0, 100% 0, 100% 70%, 50% 100%, 0 70%); }
     .tier { position: absolute; left: 50%; transform: translateX(-50%); }
-    .t1 { top: 14%; width: 52%; height: 100%; background: #e0742e; border-radius: 6px 6px 0 0; }
-    .t2 { top: 42%; width: 78%; height: 100%; background: #c2417f; border-radius: 6px 6px 0 0; }
-    .t3 { top: 66%; width: 100%; height: 100%; background: #6c3bb0; border-radius: 6px 6px 0 0; }
+    .tier.seven { height: 100%; }
+    .tier.seven::after { height: 3px; }
     .tier::after { content: ''; position: absolute; inset: 0 0 auto 0; height: 5px; background: rgba(255,255,255,.25); border-radius: inherit; }
 
     .item { position: absolute; transform: translate(-50%, -50%); line-height: 1; cursor: default; border-radius: 8px; }
@@ -181,6 +187,12 @@
     .note span { display: block; min-width: 4ch; }
 
     .kind { display: flex; justify-content: center; gap: 6px; margin: 0 0 12px; padding: 0; border: 0; font-family: system-ui, sans-serif; }
+    .tiers { display: flex; justify-content: center; gap: 6px; margin: 0 0 12px; padding: 0; border: 0; font-family: system-ui, sans-serif; }
+    .tiers legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .tiers label { cursor: pointer; padding: 6px 14px; border-radius: 999px; border: 1px solid rgba(253,243,227,.4); font-size: .8rem; }
+    .tiers input { position: absolute; opacity: 0; pointer-events: none; }
+    .tiers label:has(input:checked) { background: #c2417f; border-color: #c2417f; color: #fff; }
+    .tiers label:has(input:focus-visible) { outline: 3px solid #ffd45c; outline-offset: 2px; }
     .kind legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
     .kind label { cursor: pointer; padding: 6px 14px; border-radius: 999px; border: 1px solid rgba(253,243,227,.4); font-size: .8rem; }
     .kind input { position: absolute; opacity: 0; pointer-events: none; }
@@ -207,9 +219,12 @@
   `;
 
   class DigitalOfrenda extends HTMLElement {
-    static get observedAttributes() { return ['mode']; }
+    static get observedAttributes() { return ['mode', 'seven-tiers']; }
 
     static storage = null;
+    // Host-controlled feature flags. The component can't take payment, so a host page
+    // enables paid options here (or with attributes) and answers 'upgrade-request' events.
+    static features = { sevenTiers: false };
 
     connectedCallback() {
       this._key = 'ofrenda:' + (this.id || 'default');
@@ -241,6 +256,13 @@
     attributeChangedCallback() {
       if (this._root) this._render();
     }
+
+    get _sevenAllowed() {
+      return DigitalOfrenda.features?.sevenTiers === true || (this.hasAttribute('seven-tiers') && this.getAttribute('seven-tiers') !== 'false');
+    }
+
+    // A saved 7-tier altar shows as 3 tiers (data kept) while the feature is off.
+    get _tiers() { return this._state.tiers === 7 && this._sevenAllowed ? 7 : 3; }
 
     get _editable() { return this.getAttribute('mode') === 'edit' && (!this._store || this._synced); }
 
@@ -379,13 +401,18 @@
             <legend>Type of ofrenda</legend>
             ${Object.entries(KINDS).map(([k, d]) => `<label><input type="radio" name="kind" value="${k}">${d.label}</label>`).join('')}
           </fieldset>
+          <fieldset class="tiers">
+            <legend>Number of tiers</legend>
+            <label><input type="radio" name="tiers" value="3">3 tiers</label>
+            <label><input type="radio" name="tiers" value="7"><span class="t7label">7 tiers</span></label>
+          </fieldset>
           <header>
             <h2 class="name" data-placeholder=""></h2>
             <p class="dates" data-placeholder="Dates (e.g. 1948 – 2024)"></p>
           </header>
           <div class="stage" role="group" aria-label="Ofrenda altar">
             <div class="banner">${colors.map(c => `<i style="background:${c}"></i>`).join('')}</div>
-            <div class="tier t1"></div><div class="tier t2"></div><div class="tier t3"></div>
+            <div class="tierlayer"></div>
             <div class="items"></div>
           </div>
           <div class="tray">
@@ -410,6 +437,20 @@
       this._tray = $('.tray'); this._status = $('.status'); this._file = $('.photo-input'); this._importEl = $('.import-input');
       this._nameEl = $('.name'); this._datesEl = $('.dates');
       this._kindEl = $('.kind'); this._petNote = $('.petnote'); this._trayItems = $('.tray-items');
+      this._tiersEl = $('.tiers'); this._tierLayer = $('.tierlayer');
+      this._tiersEl.addEventListener('change', e => {
+        const n = Number(e.target.value);
+        if (n === 7 && !this._sevenAllowed) {
+          this.dispatchEvent(new CustomEvent('upgrade-request', { bubbles: true, composed: true, detail: { feature: 'sevenTiers' } }));
+          this._say('The seven-tier altar is an upgrade.');
+          this._render(); // snap the radio back
+          return;
+        }
+        if (n !== 3 && n !== 7) return;
+        this._state.tiers = n;
+        this._save();
+        this._render();
+      });
       this._kindEl.addEventListener('change', e => {
         if (!KINDS[e.target.value]) return;
         this._state.kind = e.target.value;
@@ -482,6 +523,17 @@
       const edit = this._editable;
       const kind = this._kind;
       this._kindEl.hidden = !edit;
+      this._tiersEl.hidden = !edit;
+      const tiers = this._tiers, allowed = this._sevenAllowed;
+      for (const r of this._tiersEl.querySelectorAll('input')) r.checked = Number(r.value) === tiers;
+      this._tiersEl.querySelector('.t7label').textContent = allowed ? '7 tiers' : '7 tiers (upgrade)';
+      this._tierLayer.textContent = '';
+      TIERS[tiers].forEach(([top, width, color], i) => {
+        const t = document.createElement('div');
+        t.className = 'tier' + (tiers === 7 ? ' seven' : '');
+        t.style.cssText = `top:${top}%;width:${width}%;background:${color};border-radius:6px 6px 0 0;z-index:0`;
+        this._tierLayer.appendChild(t);
+      });
       for (const r of this._kindEl.querySelectorAll('input')) r.checked = r.value === kind;
       this._nameEl.dataset.placeholder = KINDS[kind].placeholder;
       this._buildTray();
