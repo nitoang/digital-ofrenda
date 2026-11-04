@@ -1,6 +1,13 @@
 /*!
  * <digital-ofrenda> — an interactive, drag-and-drop remembrance altar.
  * Phase 1 prototype: no dependencies, saves to the visitor's browser (localStorage).
+ * Optional shared mode: set DigitalOfrenda.storage before the element connects and the altar
+ * loads from and saves to that backend instead, updating live when other people change it.
+ *   storage = {
+ *     canWrite: boolean,
+ *     subscribe(id, onState(stateOrNull, {fromCache, hasPendingWrites}), onError) -> unsubscribe,
+ *     save(id, state) -> Promise
+ *   }
  *
  * Usage:
  *   <script src="ofrenda.js"></script>
@@ -13,6 +20,11 @@
  *
  * Events:
  *   ofrenda-change  fired after every saved change, detail = the full state object
+ *
+ * Sharing (edit mode has Export / Import buttons):
+ *   el.exportState()      -> plain object ({format, version, ...state}) you can JSON.stringify
+ *   el.importState(data)  -> validates + sanitizes untrusted data, replaces the altar, saves.
+ *                            Returns true on success, false if the data is not an ofrenda.
  */
 (() => {
   const ITEMS = {
@@ -68,6 +80,46 @@
   const PHOTO_MAX_PX = 480;
   const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
   const uid = () => Math.random().toString(36).slice(2, 10);
+  const FORMAT = 'digital-ofrenda', VERSION = 1;
+  const MAX_ITEMS = 200;
+  const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const num = (v, lo, hi, dflt) => (typeof v === 'number' && isFinite(v) ? clamp(v, lo, hi) : dflt);
+
+  // Only inline raster images are accepted, never remote URLs or other schemes.
+  const isImage = v => typeof v === 'string' && /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(v);
+
+  // Earlier versions kept a single `photo` on the state; now each photo frame holds its own `src`.
+  const migratePhoto = state => {
+    if (state && state.photo) {
+      const frame = state.items.find(i => i.type === 'photo' && !i.src);
+      if (frame) frame.src = state.photo;
+      else state.items.push({ id: uid(), type: 'photo', x: 50, y: 24, src: state.photo });
+    }
+    if (state) delete state.photo;
+    return state;
+  };
+
+  // Turn untrusted data (e.g. an imported file) into a safe state object, or null if it isn't an ofrenda.
+  const sanitize = data => {
+    if (!data || typeof data !== 'object' || data.format !== FORMAT || !Array.isArray(data.items)) return null;
+    const seen = new Set();
+    const items = [];
+    for (const raw of data.items.slice(0, MAX_ITEMS)) {
+      if (!raw || typeof raw !== 'object' || !Object.prototype.hasOwnProperty.call(ITEMS, raw.type)) continue;
+      let id = str(raw.id, 32).replace(/[^\w-]/g, '');
+      if (!id || seen.has(id)) id = uid();
+      seen.add(id);
+      const item = { id, type: raw.type, x: num(raw.x, 0, 100, 50), y: num(raw.y, 0, 100, 50) };
+      if (ITEMS[raw.type].candle) item.lit = raw.lit === true;
+      if (raw.type === 'note') item.text = str(raw.text, 80) || DEFAULT_NOTE;
+      if (raw.type === 'photo' && isImage(raw.src)) item.src = raw.src;
+      items.push(item);
+    }
+    const state = { kind: KINDS[data.kind] ? data.kind : 'person', name: str(data.name, 80), dates: str(data.dates, 80), items };
+    // Files exported before multiple photos kept one top-level photo.
+    if (isImage(data.photo)) state.photo = data.photo;
+    return migratePhoto(state);
+  };
 
   const defaultState = () => ({
     kind: 'person',
@@ -157,18 +209,40 @@
   class DigitalOfrenda extends HTMLElement {
     static get observedAttributes() { return ['mode']; }
 
+    static storage = null;
+
     connectedCallback() {
       this._key = 'ofrenda:' + (this.id || 'default');
-      this._state = this._load() || defaultState();
-      this._build();
-      this._render();
+      this._store = DigitalOfrenda.storage;
+      if (this._store) {
+        // Shared mode: show the default altar read-only until the shared copy has loaded,
+        // so an early edit can never overwrite it.
+        this._state = defaultState();
+        this._synced = false;
+        this._build();
+        this._render();
+        this._say('Loading the shared altar…');
+        this._slow = setTimeout(() => this._say('The shared altar is slow to respond. It will appear when it loads.'), 10000);
+        this._unsub = this._store.subscribe(this.id || 'default',
+          (data, meta) => this._onRemote(data, meta),
+          () => this._say('The shared altar could not be loaded.'));
+      } else {
+        this._state = this._load() || defaultState();
+        this._build();
+        this._render();
+      }
+    }
+
+    disconnectedCallback() {
+      this._unsub?.();
+      clearTimeout(this._slow); clearTimeout(this._timer); clearTimeout(this._retry);
     }
 
     attributeChangedCallback() {
       if (this._root) this._render();
     }
 
-    get _editable() { return this.getAttribute('mode') === 'edit'; }
+    get _editable() { return this.getAttribute('mode') === 'edit' && (!this._store || this._synced); }
 
     // ---------- storage ----------
     _load() {
@@ -178,18 +252,68 @@
       } catch { return null; }
     }
 
-    // Earlier versions kept a single `photo` on the state; now each photo frame holds its own `src`.
-    _migrate(state) {
-      if (state && state.photo) {
-        const frame = state.items.find(i => i.type === 'photo' && !i.src);
-        if (frame) frame.src = state.photo;
-        else state.items.push({ id: uid(), type: 'photo', x: 50, y: 24, src: state.photo });
+    _migrate(state) { return migratePhoto(state); }
+
+    // ---------- shared storage ----------
+    _onRemote(data, meta) {
+      if (meta?.fromCache) return; // wait for the store's confirmed answer
+      if (!this._synced) {
+        this._synced = true;
+        clearTimeout(this._slow);
+        this._say('');
+        if (!data) { this._render(); return; }
       }
-      if (state) delete state.photo;
-      return state;
+      if (!data || meta?.hasPendingWrites) return;
+      const json = JSON.stringify(data);
+      if (json === this._lastJson) return; // echo of our own save
+      this._pending = { data, json };
+      this._applyPending();
+    }
+
+    _busy() {
+      return !!(this._timer || this._writing || this._root.querySelector('.dragging, .ghost') || this._root.activeElement?.isContentEditable);
+    }
+
+    _applyPending() {
+      clearTimeout(this._retry);
+      if (!this._pending) return;
+      if (this._busy()) { this._retry = setTimeout(() => this._applyPending(), 800); return; }
+      const { data, json } = this._pending;
+      this._pending = null;
+      this._lastJson = json;
+      this._state = migratePhoto({ ...defaultState(), ...JSON.parse(json) });
+      if (!Array.isArray(this._state.items)) this._state.items = [];
+      this._render();
+    }
+
+    _queueRemote() {
+      if (!this._synced || !this._store.canWrite) return; // viewers see changes only on their own screen
+      clearTimeout(this._timer);
+      this._timer = setTimeout(() => { this._timer = null; this._flush(); }, 300);
+    }
+
+    async _flush() {
+      if (this._writing) { this._again = true; return; }
+      this._writing = true;
+      try {
+        const json = JSON.stringify(this._state);
+        this._lastJson = json;
+        await this._store.save(this.id || 'default', JSON.parse(json));
+        this._say('');
+      } catch {
+        this._say('Could not save to the shared altar. Check your connection and try again.');
+      } finally {
+        this._writing = false;
+        if (this._again) { this._again = false; this._flush(); } else this._applyPending();
+      }
     }
 
     _save() {
+      if (this._store) {
+        this._queueRemote();
+        this.dispatchEvent(new CustomEvent('ofrenda-change', { detail: this._state, bubbles: true }));
+        return;
+      }
       try {
         localStorage.setItem(this._key, JSON.stringify(this._state));
         this._say('');
@@ -197,6 +321,39 @@
         this._say('Could not save — browser storage is full or blocked.');
       }
       this.dispatchEvent(new CustomEvent('ofrenda-change', { detail: this._state, bubbles: true }));
+    }
+
+    // ---------- sharing ----------
+    exportState() { return { format: FORMAT, version: VERSION, ...JSON.parse(JSON.stringify(this._state)) }; }
+
+    importState(data) {
+      const next = sanitize(data);
+      if (!next) return false;
+      this._state = next;
+      this._save();
+      this._render();
+      return true;
+    }
+
+    _download() {
+      const blob = new Blob([JSON.stringify(this.exportState(), null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const slug = (this._state.name || 'ofrenda').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'ofrenda';
+      a.href = url; a.download = slug + '.ofrenda.json';
+      this._root.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      this._say('Ofrenda exported.');
+    }
+
+    async _importFile(file) {
+      if (file.size > 8 * 1024 * 1024) { this._say('That file is too large to be an ofrenda.'); return; }
+      let data;
+      try { data = JSON.parse(await file.text()); } catch { this._say('That file is not valid JSON.'); return; }
+      if (!sanitize(data)) { this._say('That file is not a digital-ofrenda export.'); return; }
+      if (!confirm('Replace this ofrenda with the imported one?')) return;
+      this.importState(data);
+      this._say('Ofrenda imported.');
     }
 
     _say(msg) { if (this._status) this._status.textContent = msg; }
@@ -227,8 +384,11 @@
             <p class="petnote" hidden></p>
             <div class="actions">
               <button type="button" class="photo-btn">Add photo</button>
+              <button type="button" class="ghost-btn export-btn">Export</button>
+              <button type="button" class="ghost-btn import-btn">Import</button>
               <button type="button" class="ghost-btn reset-btn">Start over</button>
-              <input type="file" accept="image/*" hidden>
+              <input type="file" class="photo-input" accept="image/*" hidden>
+              <input type="file" class="import-input" accept=".json,application/json" hidden>
               <span class="hint">Click a candle to light it. Click a photo frame to change its photo. Double-click a note to edit.</span>
             </div>
           </div>
@@ -237,7 +397,7 @@
 
       const $ = s => this._root.querySelector(s);
       this._wrap = $('.wrap'); this._stage = $('.stage'); this._itemsEl = $('.items');
-      this._tray = $('.tray'); this._status = $('.status'); this._file = $('input[type=file]');
+      this._tray = $('.tray'); this._status = $('.status'); this._file = $('.photo-input'); this._importEl = $('.import-input');
       this._nameEl = $('.name'); this._datesEl = $('.dates');
       this._kindEl = $('.kind'); this._petNote = $('.petnote'); this._trayItems = $('.tray-items');
       this._kindEl.addEventListener('change', e => {
@@ -248,8 +408,22 @@
       });
 
       $('.photo-btn').addEventListener('click', () => this._pickPhoto(null));
-      $('.reset-btn').addEventListener('click', () => {
-        if (confirm('Clear this ofrenda and start over?')) { this._state = defaultState(); this._save(); this._render(); }
+      $('.export-btn').addEventListener('click', () => this._download());
+      $('.import-btn').addEventListener('click', () => this._importEl.click());
+      this._importEl.addEventListener('change', () => {
+        const f = this._importEl.files[0]; this._importEl.value = '';
+        if (f) this._importFile(f);
+      });
+      const reset = $('.reset-btn');
+      reset.addEventListener('click', () => {
+        if (!this._confirmReset) {
+          // confirm() is blocked in some embeds, so ask on the button itself
+          this._confirmReset = setTimeout(() => { this._confirmReset = null; reset.textContent = 'Start over'; }, 4000);
+          reset.textContent = 'Click again to clear everything';
+          return;
+        }
+        clearTimeout(this._confirmReset); this._confirmReset = null; reset.textContent = 'Start over';
+        this._state = defaultState(); this._save(); this._render();
       });
       this._file.addEventListener('change', () => {
         const f = this._file.files[0]; this._file.value = '';

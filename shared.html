@@ -1,0 +1,60 @@
+<title>Ofrenda Compartida</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  /* Layout: one centered altar under a short heading and a status line that says who can change it. */
+  :root {
+    --bg: #f3ecf6; --fg: #2a1640; --muted: #6b5a80; --accent: #a8316a; --line: #d8c9e3;
+    --display: Georgia, 'Times New Roman', serif; --body: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #170d26; --fg: #fdf3e3; --muted: #b9a8d0; --accent: #ff9a3c; --line: #3a2158; color-scheme: dark; }
+  }
+  :root[data-theme="dark"] { --bg: #170d26; --fg: #fdf3e3; --muted: #b9a8d0; --accent: #ff9a3c; --line: #3a2158; color-scheme: dark; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--body);
+         padding-block: 28px 56px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  main { max-width: 760px; margin: 0 auto; display: grid; gap: 16px; }
+  h1 { margin: 0; font: normal clamp(1.6rem, 5vw, 2.2rem)/1.15 var(--display); text-align: center; text-wrap: balance; }
+  .who { margin: 0 auto; max-width: 56ch; text-align: center; color: var(--muted); line-height: 1.5; font-size: .95rem; }
+  .who b { color: var(--accent); font-weight: 600; }
+</style>
+
+<main>
+  <h1>Ofrenda Compartida</h1>
+  <p class="who" id="who">Loading the altar…</p>
+  <div id="mount"></div>
+</main>
+
+<script src="ofrenda.js"></script>
+<script>
+(async () => {
+  const who = document.getElementById('who');
+  const mount = document.getElementById('mount');
+  const Ofrenda = customElements.get('digital-ofrenda');
+  let db = null, user = null;
+  try {
+    db = await window.claude?.use('db') ?? null;
+    user = await window.claude?.use('user') ?? null;
+  } catch { /* fall back to a private copy below */ }
+
+  let mode = 'edit';
+  if (db) {
+    const canWrite = (user?.can?.('data.write') ?? null) !== false;
+    Ofrenda.storage = {
+      canWrite,
+      subscribe: (id, onState, onError) =>
+        db.doc('ofrendas/' + id).onSnapshot(s => onState(s.exists ? s.data() : null, s.metadata), onError),
+      save: (id, state) => db.doc('ofrendas/' + id).set(state),
+    };
+    mode = canWrite ? 'edit' : 'view';
+    who.innerHTML = canWrite
+      ? '<b>Shared live.</b> Everyone with this link sees the same altar, and changes appear on their screens as you make them.'
+      : '<b>Shared live.</b> You can see the altar as it changes. You can light candles on your own screen, but only contributors can change the shared altar.';
+  } else {
+    who.textContent = 'Sharing is not available here, so this altar is saved only in this browser.';
+  }
+  const el = document.createElement('digital-ofrenda');
+  el.id = 'altar';
+  el.setAttribute('mode', mode);
+  mount.appendChild(el);
+})();
+</script>
