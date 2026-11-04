@@ -20,6 +20,11 @@
  *
  * Events:
  *   ofrenda-change  fired after every saved change, detail = the full state object
+ *
+ * Sharing (edit mode has Export / Import buttons):
+ *   el.exportState()      -> plain object ({format, version, ...state}) you can JSON.stringify
+ *   el.importState(data)  -> validates + sanitizes untrusted data, replaces the altar, saves.
+ *                            Returns true on success, false if the data is not an ofrenda.
  */
 (() => {
   const ITEMS = {
@@ -75,6 +80,30 @@
   const PHOTO_MAX_PX = 480;
   const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
   const uid = () => Math.random().toString(36).slice(2, 10);
+  const FORMAT = 'digital-ofrenda', VERSION = 1;
+  const MAX_ITEMS = 200;
+  const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const num = (v, lo, hi, dflt) => (typeof v === 'number' && isFinite(v) ? clamp(v, lo, hi) : dflt);
+
+  // Turn untrusted data (e.g. an imported file) into a safe state object, or null if it isn't an ofrenda.
+  const sanitize = data => {
+    if (!data || typeof data !== 'object' || data.format !== FORMAT || !Array.isArray(data.items)) return null;
+    const seen = new Set();
+    const items = [];
+    for (const raw of data.items.slice(0, MAX_ITEMS)) {
+      if (!raw || typeof raw !== 'object' || !Object.prototype.hasOwnProperty.call(ITEMS, raw.type)) continue;
+      let id = str(raw.id, 32).replace(/[^\w-]/g, '');
+      if (!id || seen.has(id)) id = uid();
+      seen.add(id);
+      const item = { id, type: raw.type, x: num(raw.x, 0, 100, 50), y: num(raw.y, 0, 100, 50) };
+      if (ITEMS[raw.type].candle) item.lit = raw.lit === true;
+      if (raw.type === 'note') item.text = str(raw.text, 80) || DEFAULT_NOTE;
+      items.push(item);
+    }
+    // Only inline raster images are accepted, never remote URLs or other schemes.
+    const photo = typeof data.photo === 'string' && /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(data.photo) ? data.photo : null;
+    return { kind: KINDS[data.kind] ? data.kind : 'person', name: str(data.name, 80), dates: str(data.dates, 80), photo, items };
+  };
 
   const defaultState = () => ({
     kind: 'person',
@@ -277,6 +306,39 @@
       this.dispatchEvent(new CustomEvent('ofrenda-change', { detail: this._state, bubbles: true }));
     }
 
+    // ---------- sharing ----------
+    exportState() { return { format: FORMAT, version: VERSION, ...JSON.parse(JSON.stringify(this._state)) }; }
+
+    importState(data) {
+      const next = sanitize(data);
+      if (!next) return false;
+      this._state = next;
+      this._save();
+      this._render();
+      return true;
+    }
+
+    _download() {
+      const blob = new Blob([JSON.stringify(this.exportState(), null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const slug = (this._state.name || 'ofrenda').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'ofrenda';
+      a.href = url; a.download = slug + '.ofrenda.json';
+      this._root.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      this._say('Ofrenda exported.');
+    }
+
+    async _importFile(file) {
+      if (file.size > 8 * 1024 * 1024) { this._say('That file is too large to be an ofrenda.'); return; }
+      let data;
+      try { data = JSON.parse(await file.text()); } catch { this._say('That file is not valid JSON.'); return; }
+      if (!sanitize(data)) { this._say('That file is not a digital-ofrenda export.'); return; }
+      if (!confirm('Replace this ofrenda with the imported one?')) return;
+      this.importState(data);
+      this._say('Ofrenda imported.');
+    }
+
     _say(msg) { if (this._status) this._status.textContent = msg; }
 
     // ---------- structure ----------
@@ -305,8 +367,11 @@
             <p class="petnote" hidden></p>
             <div class="actions">
               <button type="button" class="photo-btn">Add photo</button>
+              <button type="button" class="ghost-btn export-btn">Export</button>
+              <button type="button" class="ghost-btn import-btn">Import</button>
               <button type="button" class="ghost-btn reset-btn">Start over</button>
-              <input type="file" accept="image/*" hidden>
+              <input type="file" class="photo-input" accept="image/*" hidden>
+              <input type="file" class="import-input" accept=".json,application/json" hidden>
               <span class="hint">Click a candle to light it. Double-click a note to edit.</span>
             </div>
           </div>
@@ -315,7 +380,7 @@
 
       const $ = s => this._root.querySelector(s);
       this._wrap = $('.wrap'); this._stage = $('.stage'); this._itemsEl = $('.items');
-      this._tray = $('.tray'); this._status = $('.status'); this._file = $('input[type=file]');
+      this._tray = $('.tray'); this._status = $('.status'); this._file = $('.photo-input'); this._importEl = $('.import-input');
       this._nameEl = $('.name'); this._datesEl = $('.dates');
       this._kindEl = $('.kind'); this._petNote = $('.petnote'); this._trayItems = $('.tray-items');
       this._kindEl.addEventListener('change', e => {
@@ -326,6 +391,12 @@
       });
 
       $('.photo-btn').addEventListener('click', () => this._file.click());
+      $('.export-btn').addEventListener('click', () => this._download());
+      $('.import-btn').addEventListener('click', () => this._importEl.click());
+      this._importEl.addEventListener('change', () => {
+        const f = this._importEl.files[0]; this._importEl.value = '';
+        if (f) this._importFile(f);
+      });
       const reset = $('.reset-btn');
       reset.addEventListener('click', () => {
         if (!this._confirmReset) {
