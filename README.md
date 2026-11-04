@@ -20,4 +20,4 @@ const json = JSON.stringify(el.exportState());   // save or send it anywhere
 el.importState(JSON.parse(json));                 // true on success, false if not an ofrenda
 ```
 
-Imported data is treated as untrusted: unknown item types are dropped, positions are clamped, text is length-limited, and the photo must be an inline image (remote URLs are rejected).
+Imported data is treated as untrusted: unknown item types are dropped, positions are clamped, text is length-limited, and each photo must be an inline image (remote URLs are rejected). Files exported before multiple photos (a single top-level `photo`) still import.
