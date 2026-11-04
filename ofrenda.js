@@ -73,7 +73,6 @@
     kind: 'person',
     name: '',
     dates: '',
-    photo: null,
     items: [
       { id: uid(), type: 'photo',    x: 50, y: 24 },
       { id: uid(), type: 'candle',   x: 33, y: 30, lit: true },
@@ -175,8 +174,19 @@
     _load() {
       try {
         const raw = localStorage.getItem(this._key);
-        return raw ? JSON.parse(raw) : null;
+        return raw ? this._migrate(JSON.parse(raw)) : null;
       } catch { return null; }
+    }
+
+    // Earlier versions kept a single `photo` on the state; now each photo frame holds its own `src`.
+    _migrate(state) {
+      if (state && state.photo) {
+        const frame = state.items.find(i => i.type === 'photo' && !i.src);
+        if (frame) frame.src = state.photo;
+        else state.items.push({ id: uid(), type: 'photo', x: 50, y: 24, src: state.photo });
+      }
+      if (state) delete state.photo;
+      return state;
     }
 
     _save() {
@@ -219,7 +229,7 @@
               <button type="button" class="photo-btn">Add photo</button>
               <button type="button" class="ghost-btn reset-btn">Start over</button>
               <input type="file" accept="image/*" hidden>
-              <span class="hint">Click a candle to light it. Double-click a note to edit.</span>
+              <span class="hint">Click a candle to light it. Click a photo frame to change its photo. Double-click a note to edit.</span>
             </div>
           </div>
           <div class="status" role="status" aria-live="polite"></div>
@@ -237,13 +247,14 @@
         this._render();
       });
 
-      $('.photo-btn').addEventListener('click', () => this._file.click());
+      $('.photo-btn').addEventListener('click', () => this._pickPhoto(null));
       $('.reset-btn').addEventListener('click', () => {
         if (confirm('Clear this ofrenda and start over?')) { this._state = defaultState(); this._save(); this._render(); }
       });
       this._file.addEventListener('change', () => {
         const f = this._file.files[0]; this._file.value = '';
-        if (f) this._setPhoto(f);
+        const target = this._photoTarget; this._photoTarget = null;
+        if (f) this._setPhoto(f, target);
       });
 
       for (const [el, key] of [[this._nameEl, 'name'], [this._datesEl, 'dates']]) {
@@ -303,7 +314,7 @@
 
       if (item.type === 'photo') {
         const f = document.createElement('div'); f.className = 'frame';
-        if (this._state.photo) { const img = document.createElement('img'); img.src = this._state.photo; img.alt = ''; f.appendChild(img); }
+        if (item.src) { const img = document.createElement('img'); img.src = item.src; img.alt = ''; f.appendChild(img); }
         else { const s = document.createElement('span'); s.textContent = this._editable ? 'Click to add a photo' : ''; f.appendChild(s); }
         el.appendChild(f);
       } else if (item.type === 'note') {
@@ -369,7 +380,7 @@
         this._label(el, item);
         this._save();
       } else if (item.type === 'photo' && this._editable) {
-        this._file.click();
+        this._pickPhoto(item);
       }
     }
 
@@ -502,7 +513,13 @@
       span.addEventListener('keydown', key);
     }
 
-    async _setPhoto(file) {
+    // item = the frame to fill; null = fill the first empty frame, or add a new one.
+    _pickPhoto(item) {
+      this._photoTarget = item;
+      this._file.click();
+    }
+
+    async _setPhoto(file, item) {
       const url = URL.createObjectURL(file);
       try {
         const img = new Image();
@@ -511,7 +528,11 @@
         const c = document.createElement('canvas');
         c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        this._state.photo = c.toDataURL('image/jpeg', 0.82);
+        const src = c.toDataURL('image/jpeg', 0.82);
+        const target = item && this._state.items.includes(item) ? item
+          : this._state.items.find(i => i.type === 'photo' && !i.src);
+        if (target) target.src = src;
+        else this._state.items.push({ id: uid(), type: 'photo', x: clamp(30 + Math.random() * 40, 4, 96), y: clamp(25 + Math.random() * 35, 12, 96), src });
         this._save();
         this._render();
       } catch {
