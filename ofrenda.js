@@ -1,6 +1,13 @@
 /*!
  * <digital-ofrenda> — an interactive, drag-and-drop remembrance altar.
  * Phase 1 prototype: no dependencies, saves to the visitor's browser (localStorage).
+ * Optional shared mode: set DigitalOfrenda.storage before the element connects and the altar
+ * loads from and saves to that backend instead, updating live when other people change it.
+ *   storage = {
+ *     canWrite: boolean,
+ *     subscribe(id, onState(stateOrNull, {fromCache, hasPendingWrites}), onError) -> unsubscribe,
+ *     save(id, state) -> Promise
+ *   }
  *
  * Usage:
  *   <script src="ofrenda.js"></script>
@@ -158,18 +165,40 @@
   class DigitalOfrenda extends HTMLElement {
     static get observedAttributes() { return ['mode']; }
 
+    static storage = null;
+
     connectedCallback() {
       this._key = 'ofrenda:' + (this.id || 'default');
-      this._state = this._load() || defaultState();
-      this._build();
-      this._render();
+      this._store = DigitalOfrenda.storage;
+      if (this._store) {
+        // Shared mode: show the default altar read-only until the shared copy has loaded,
+        // so an early edit can never overwrite it.
+        this._state = defaultState();
+        this._synced = false;
+        this._build();
+        this._render();
+        this._say('Loading the shared altar…');
+        this._slow = setTimeout(() => this._say('The shared altar is slow to respond. It will appear when it loads.'), 10000);
+        this._unsub = this._store.subscribe(this.id || 'default',
+          (data, meta) => this._onRemote(data, meta),
+          () => this._say('The shared altar could not be loaded.'));
+      } else {
+        this._state = this._load() || defaultState();
+        this._build();
+        this._render();
+      }
+    }
+
+    disconnectedCallback() {
+      this._unsub?.();
+      clearTimeout(this._slow); clearTimeout(this._timer); clearTimeout(this._retry);
     }
 
     attributeChangedCallback() {
       if (this._root) this._render();
     }
 
-    get _editable() { return this.getAttribute('mode') === 'edit'; }
+    get _editable() { return this.getAttribute('mode') === 'edit' && (!this._store || this._synced); }
 
     // ---------- storage ----------
     _load() {
@@ -179,7 +208,66 @@
       } catch { return null; }
     }
 
+    // ---------- shared storage ----------
+    _onRemote(data, meta) {
+      if (meta?.fromCache) return; // wait for the store's confirmed answer
+      if (!this._synced) {
+        this._synced = true;
+        clearTimeout(this._slow);
+        this._say('');
+        if (!data) { this._render(); return; }
+      }
+      if (!data || meta?.hasPendingWrites) return;
+      const json = JSON.stringify(data);
+      if (json === this._lastJson) return; // echo of our own save
+      this._pending = { data, json };
+      this._applyPending();
+    }
+
+    _busy() {
+      return !!(this._timer || this._writing || this._root.querySelector('.dragging, .ghost') || this._root.activeElement?.isContentEditable);
+    }
+
+    _applyPending() {
+      clearTimeout(this._retry);
+      if (!this._pending) return;
+      if (this._busy()) { this._retry = setTimeout(() => this._applyPending(), 800); return; }
+      const { data, json } = this._pending;
+      this._pending = null;
+      this._lastJson = json;
+      this._state = { ...defaultState(), ...JSON.parse(json) };
+      if (!Array.isArray(this._state.items)) this._state.items = [];
+      this._render();
+    }
+
+    _queueRemote() {
+      if (!this._synced || !this._store.canWrite) return; // viewers see changes only on their own screen
+      clearTimeout(this._timer);
+      this._timer = setTimeout(() => { this._timer = null; this._flush(); }, 300);
+    }
+
+    async _flush() {
+      if (this._writing) { this._again = true; return; }
+      this._writing = true;
+      try {
+        const json = JSON.stringify(this._state);
+        this._lastJson = json;
+        await this._store.save(this.id || 'default', JSON.parse(json));
+        this._say('');
+      } catch {
+        this._say('Could not save to the shared altar. Check your connection and try again.');
+      } finally {
+        this._writing = false;
+        if (this._again) { this._again = false; this._flush(); } else this._applyPending();
+      }
+    }
+
     _save() {
+      if (this._store) {
+        this._queueRemote();
+        this.dispatchEvent(new CustomEvent('ofrenda-change', { detail: this._state, bubbles: true }));
+        return;
+      }
       try {
         localStorage.setItem(this._key, JSON.stringify(this._state));
         this._say('');
@@ -238,8 +326,16 @@
       });
 
       $('.photo-btn').addEventListener('click', () => this._file.click());
-      $('.reset-btn').addEventListener('click', () => {
-        if (confirm('Clear this ofrenda and start over?')) { this._state = defaultState(); this._save(); this._render(); }
+      const reset = $('.reset-btn');
+      reset.addEventListener('click', () => {
+        if (!this._confirmReset) {
+          // confirm() is blocked in some embeds, so ask on the button itself
+          this._confirmReset = setTimeout(() => { this._confirmReset = null; reset.textContent = 'Start over'; }, 4000);
+          reset.textContent = 'Click again to clear everything';
+          return;
+        }
+        clearTimeout(this._confirmReset); this._confirmReset = null; reset.textContent = 'Start over';
+        this._state = defaultState(); this._save(); this._render();
       });
       this._file.addEventListener('change', () => {
         const f = this._file.files[0]; this._file.value = '';
