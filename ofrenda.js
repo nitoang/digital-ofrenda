@@ -351,9 +351,19 @@
       let data;
       try { data = JSON.parse(await file.text()); } catch { this._say('That file is not valid JSON.'); return; }
       if (!sanitize(data)) { this._say('That file is not a digital-ofrenda export.'); return; }
-      if (!confirm('Replace this ofrenda with the imported one?')) return;
-      this.importState(data);
-      this._say('Ofrenda imported.');
+      // confirm() is blocked in some embeds, so ask on the Import button itself
+      this._pendingImport = data;
+      this._importBtn.textContent = 'Click to replace this ofrenda';
+      this._say('File ready. Click Import again to replace this ofrenda with it.');
+      clearTimeout(this._importTimer);
+      this._importTimer = setTimeout(() => this._cancelImport('Import cancelled.'), 8000);
+    }
+
+    _cancelImport(msg) {
+      clearTimeout(this._importTimer); this._importTimer = null;
+      this._pendingImport = null;
+      if (this._importBtn) this._importBtn.textContent = 'Import';
+      if (msg) this._say(msg);
     }
 
     _say(msg) { if (this._status) this._status.textContent = msg; }
@@ -409,7 +419,17 @@
 
       $('.photo-btn').addEventListener('click', () => this._pickPhoto(null));
       $('.export-btn').addEventListener('click', () => this._download());
-      $('.import-btn').addEventListener('click', () => this._importEl.click());
+      this._importBtn = $('.import-btn');
+      this._importBtn.addEventListener('click', () => {
+        if (this._pendingImport) {
+          const data = this._pendingImport;
+          this._cancelImport();
+          this.importState(data);
+          this._say('Ofrenda imported.');
+          return;
+        }
+        this._importEl.click();
+      });
       this._importEl.addEventListener('change', () => {
         const f = this._importEl.files[0]; this._importEl.value = '';
         if (f) this._importFile(f);
