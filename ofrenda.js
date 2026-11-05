@@ -84,6 +84,7 @@
   const MAX_ITEMS = 200;
   const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
   const MIN_SCALE = 0.5, MAX_SCALE = 3;
+  const TOUCH_SLOP = 10; // px a finger may wobble before a tap becomes a drag
   const num = (v, lo, hi, dflt) => (typeof v === 'number' && isFinite(v) ? clamp(v, lo, hi) : dflt);
 
   // Only inline raster images are accepted, never remote URLs or other schemes.
@@ -160,7 +161,7 @@
     [contenteditable="true"] { outline: none; border-bottom: 1px dashed rgba(253,243,227,.35); cursor: text; }
 
     .stage { position: relative; aspect-ratio: 4 / 3; container-type: inline-size; overflow: hidden;
-             border-radius: 10px; background: linear-gradient(#1b0d2e, #3a1f57); touch-action: none; user-select: none; -webkit-user-select: none; }
+             border-radius: 10px; background: linear-gradient(#1b0d2e, #3a1f57); user-select: none; -webkit-user-select: none; }
     .banner { position: absolute; inset: 0 0 auto 0; height: 9%; display: flex; }
     .banner i { flex: 1; clip-path: polygon(0 0, 100% 0, 100% 70%, 50% 100%, 0 70%); }
     .tier { position: absolute; left: 50%; transform: translateX(-50%); }
@@ -174,7 +175,7 @@
     .handle { display: none; position: absolute; --k: calc(1px / var(--s, 1)); width: calc(26 * var(--k)); height: calc(26 * var(--k));
               margin: calc(-13 * var(--k)); border-radius: 50%; background: #ffd45c; border: calc(2 * var(--k)) solid #3a2158;
               box-shadow: 0 1px 4px rgba(0,0,0,.5); touch-action: none; z-index: 2; }
-    .handle.resize { right: 0; bottom: 0; cursor: nwse-resize; }
+    .handle.resize { right: calc(-9 * var(--k)); bottom: calc(-9 * var(--k)); cursor: nwse-resize; } /* centred just outside the corner so it never covers a small item */
     .handle.rotate { left: 50%; top: calc(-26 * var(--k)); cursor: grab; }
     .handle.rotate::before { content: ''; position: absolute; left: 50%; top: 100%; width: calc(2 * var(--k)); height: calc(14 * var(--k));
                              margin-left: calc(-1 * var(--k)); background: #ffd45c; }
@@ -217,7 +218,7 @@
     .tray.danger { border-color: #ff6b6b; background: #5a2140; }
     .tray h3 { margin: 0 0 8px; font-size: .85rem; font-weight: normal; opacity: .75; font-family: system-ui, sans-serif; }
     .tray-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 8px; }
-    .tray button { all: unset; box-sizing: border-box; cursor: grab; touch-action: none; text-align: center; padding: 8px 4px;
+    .tray button { all: unset; box-sizing: border-box; cursor: grab; touch-action: pan-y; /* a swipe scrolls the page; a tap adds */ text-align: center; padding: 8px 4px;
                    border-radius: 8px; background: rgba(255,255,255,.07); font-family: system-ui, sans-serif; font-size: .7rem; }
     .tray button:hover { background: rgba(255,255,255,.14); }
     .tray button:focus-visible { outline: 3px solid #ffd45c; }
@@ -430,7 +431,7 @@
             <div class="items"></div>
           </div>
           <div class="tray">
-            <h3>Drag an item onto the altar (or press Enter to add it). Drag items here to remove them.</h3>
+            <h3>Drag an item onto the altar, or tap it or press Enter to add it. Drag items here to remove them.</h3>
             <div class="tray-items"></div>
             <p class="petnote" hidden></p>
             <div class="actions">
@@ -440,7 +441,7 @@
               <button type="button" class="ghost-btn reset-btn">Start over</button>
               <input type="file" class="photo-input" accept="image/*" hidden>
               <input type="file" class="import-input" accept=".json,application/json" hidden>
-              <span class="hint">Click a candle to light it. Click a photo frame to change its photo. Double-click a note to edit. With an item selected: arrows move it, + / − resize it, [ / ] rotate it (candles stay upright). Or drag the round handles.</span>
+              <span class="hint" id="hint">Click a candle to light it. Click a photo frame to change its photo. Double-click a note to edit. With an item selected: arrows move it, + / − resize it, [ / ] rotate it (candles stay upright). Or drag the round handles.</span>
             </div>
           </div>
           <div class="status" role="status" aria-live="polite"></div>
@@ -523,7 +524,7 @@
         b.innerHTML = `<b>${def.emoji}</b>${def.label}`;
         b.addEventListener('pointerdown', e => this._trayDown(e, type));
         b.addEventListener('keydown', e => {
-          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._add(type, 45 + Math.random() * 10, 45 + Math.random() * 10); }
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._add(type, 45 + Math.random() * 10, 45 + Math.random() * 10, true); }
         });
         this._trayItems.appendChild(b);
       }
@@ -571,6 +572,7 @@
       el.dataset.id = item.id;
       el.tabIndex = 0;
       el.setAttribute('role', 'img');
+      if (this._editable) el.setAttribute('aria-describedby', 'hint');
 
       if (item.type === 'photo') {
         const f = document.createElement('div'); f.className = 'frame';
@@ -610,7 +612,8 @@
     _label(el, item) {
       const base = ITEMS[item.type].label;
       const extra = ITEMS[item.type].candle ? (item.lit ? ', lit' : ', unlit') : item.type === 'note' ? ': ' + (item.text ?? DEFAULT_NOTE) : '';
-      el.setAttribute('aria-label', base + extra);
+      const look = (item.scale ? `, size ${Math.round(item.scale * 100)}%` : '') + (item.rot && !ITEMS[item.type].candle ? `, rotated ${item.rot}°` : '');
+      el.setAttribute('aria-label', base + extra + look);
       el.title = base; // hover tooltip
     }
 
@@ -623,7 +626,7 @@
       el.style.zIndex = Math.round(item.y * 10); // lower on the altar = in front
     }
 
-    _add(type, x, y) {
+    _add(type, x, y, byKeyboard = false) {
       const item = { id: uid(), type, x: clamp(x, 4, 96), y: clamp(y, 12, 96) };
       if (ITEMS[type].candle) item.lit = true;
       if (type === 'note') item.text = DEFAULT_NOTE;
@@ -631,13 +634,16 @@
       const el = this._makeEl(item);
       this._itemsEl.appendChild(el);
       this._save();
+      this._say(`${ITEMS[type].label} added.` + (byKeyboard && type !== 'note' ? ' Use the arrow keys to move it, plus and minus to resize it.' : ''));
       if (type === 'note') this._editNote(el, item);
+      else if (byKeyboard) el.focus(); // so a keyboard user can place it straight away
     }
 
     _remove(item) {
       this._state.items = this._state.items.filter(i => i !== item);
       this._itemsEl.querySelector(`[data-id="${item.id}"]`)?.remove();
       this._save();
+      this._say(`${ITEMS[item.type].label} removed.`);
     }
 
     _over(elm, ev) {
@@ -651,6 +657,7 @@
         el.classList.toggle('lit', item.lit);
         this._label(el, item);
         this._save();
+        this._say(`${ITEMS[item.type].label} ${item.lit ? 'lit' : 'unlit'}.`);
       } else if (item.type === 'photo' && this._editable) {
         this._pickPhoto(item);
       }
@@ -704,12 +711,13 @@
       const r0 = this._stage.getBoundingClientRect();
       const offX = item.x - (sx - r0.left) / r0.width * 100;
       const offY = item.y - (sy - r0.top) / r0.height * 100;
+      const slop = e.pointerType === 'touch' ? TOUCH_SLOP : 4; // fingers wobble more than mice
       let moved = false;
       el.setPointerCapture(e.pointerId);
 
       const move = ev => {
         if (!edit) return;
-        if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;
+        if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < slop) return;
         moved = true;
         el.classList.add('dragging');
         const r = this._stage.getBoundingClientRect();
@@ -759,7 +767,9 @@
         if (item.scale === 1) delete item.scale;
         if (item.rot === 0) delete item.rot;
         this._place(el, item);
+        this._label(el, item);
         this._save();
+        this._say(size ? `${ITEMS[item.type].label}: size ${Math.round((item.scale ?? 1) * 100)}%.` : `${ITEMS[item.type].label}: rotated ${item.rot ?? 0}°.`);
         return;
       }
       const step = e.shiftKey ? 5 : 1;
@@ -778,6 +788,7 @@
       if (!this._editable || e.button !== 0) return;
       e.preventDefault();
       const sx = e.clientX, sy = e.clientY;
+      const slop = e.pointerType === 'touch' ? TOUCH_SLOP : 4; // fingers wobble more than mice
       let moved = false;
       const ghost = document.createElement('div');
       ghost.className = 'ghost';
@@ -787,7 +798,7 @@
       const follow = ev => { ghost.style.left = ev.clientX + 'px'; ghost.style.top = ev.clientY + 'px'; };
 
       const move = ev => {
-        if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;
+        if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < slop) return;
         moved = true; ghost.hidden = false; follow(ev);
       };
       const up = ev => {
