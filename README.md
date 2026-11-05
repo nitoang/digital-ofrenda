@@ -41,3 +41,15 @@ document.addEventListener('upgrade-request', e => showPricing(e.detail.feature))
 ```
 
 A saved or imported 7-tier altar shows as 3 tiers while the feature is off. The setting is kept, so enabling it later restores the 7 tiers.
+
+## Tests
+
+Browser tests (Playwright + Node's built-in test runner) load the pages straight from disk:
+
+```sh
+npm install
+npx playwright install chromium   # first time only
+npm test
+```
+
+They cover the default altar, Person / Pet / Mixed, 3 vs 7 tiers and the upgrade event, Start over, multiple photos, old single-photo saves, export/import (with the two-click confirm), and sanitizing of hostile imports. They fail on any page error or browser dialog.
