@@ -83,6 +83,7 @@
   const FORMAT = 'digital-ofrenda', VERSION = 1;
   const MAX_ITEMS = 200;
   const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const MIN_SCALE = 0.5, MAX_SCALE = 3;
   const num = (v, lo, hi, dflt) => (typeof v === 'number' && isFinite(v) ? clamp(v, lo, hi) : dflt);
 
   // Only inline raster images are accepted, never remote URLs or other schemes.
@@ -116,6 +117,10 @@
       if (!id || seen.has(id)) id = uid();
       seen.add(id);
       const item = { id, type: raw.type, x: num(raw.x, 0, 100, 50), y: num(raw.y, 0, 100, 50) };
+      const scale = num(raw.scale, MIN_SCALE, MAX_SCALE, 1);
+      if (scale !== 1) item.scale = scale;
+      const rot = ITEMS[raw.type].candle ? 0 : num(raw.rot, -180, 180, 0); // candles stay upright
+      if (rot !== 0) item.rot = rot;
       if (ITEMS[raw.type].candle) item.lit = raw.lit === true;
       if (raw.type === 'note') item.text = str(raw.text, 80) || DEFAULT_NOTE;
       if (raw.type === 'photo' && isImage(raw.src)) item.src = raw.src;
@@ -426,7 +431,7 @@
               <button type="button" class="ghost-btn reset-btn">Start over</button>
               <input type="file" class="photo-input" accept="image/*" hidden>
               <input type="file" class="import-input" accept=".json,application/json" hidden>
-              <span class="hint">Click a candle to light it. Click a photo frame to change its photo. Double-click a note to edit.</span>
+              <span class="hint">Click a candle to light it. Click a photo frame to change its photo. Double-click a note to edit. With an item selected: arrows move it, + / − resize it, [ / ] rotate it (candles stay upright).</span>
             </div>
           </div>
           <div class="status" role="status" aria-live="polite"></div>
@@ -595,6 +600,8 @@
     _place(el, item) {
       el.style.left = item.x + '%';
       el.style.top = item.y + '%';
+      const scale = item.scale ?? 1, rot = ITEMS[item.type].candle ? 0 : (item.rot ?? 0);
+      el.style.transform = scale === 1 && !rot ? '' : `translate(-50%, -50%) rotate(${rot}deg) scale(${scale})`;
       el.style.zIndex = Math.round(item.y * 10); // lower on the altar = in front
     }
 
@@ -684,6 +691,17 @@
         const next = el.nextElementSibling || el.previousElementSibling;
         this._remove(item);
         next?.focus();
+        return;
+      }
+      const size = { '+': 1, '=': 1, '-': -1, '_': -1 }[e.key], turn = { ']': 1, '[': -1 }[e.key];
+      if (size || (turn && !ITEMS[item.type].candle)) {
+        e.preventDefault();
+        if (size) item.scale = clamp(Math.round(((item.scale ?? 1) + size * (e.shiftKey ? 0.05 : 0.1)) * 100) / 100, MIN_SCALE, MAX_SCALE);
+        else item.rot = ((Math.round((item.rot ?? 0) + turn * (e.shiftKey ? 5 : 15) + 540) % 360) + 360) % 360 - 180;
+        if (item.scale === 1) delete item.scale;
+        if (item.rot === 0) delete item.rot;
+        this._place(el, item);
+        this._save();
         return;
       }
       const step = e.shiftKey ? 5 : 1;

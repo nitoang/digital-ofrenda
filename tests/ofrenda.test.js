@@ -192,3 +192,63 @@ test('every tray button and placed item has a name and a hover tooltip', async (
   for (const [title, aria] of placed) assert.ok(title && aria.startsWith(title), 'item: ' + aria);
   await ctx.close();
 });
+
+test('keyboard resize and rotate; candles stay upright; notes still edit', async () => {
+  const { el, page, ctx } = await h.altar();
+  const find = type => state(page).then(s => s.items.find(i => i.type === type));
+  await el.locator('.tray-items button[data-type="note"]').focus();
+  await page.keyboard.press('Enter');
+  const note = el.locator('.item.note').first();
+  await note.focus();
+  await page.keyboard.press('+'); await page.keyboard.press('+');
+  assert.equal((await find('note')).scale, 1.2);
+  await page.keyboard.press('Shift+-');
+  assert.equal((await find('note')).scale, 1.15);
+  await page.keyboard.press(']'); await page.keyboard.press('Shift+]');
+  assert.equal((await find('note')).rot, 20);
+  assert.match(await note.evaluate(e => e.style.transform), /rotate\(20deg\) scale\(1\.15\)/);
+  await page.keyboard.press('['); await page.keyboard.press('[');
+  assert.equal((await find('note')).rot, -10);
+  for (let i = 0; i < 40; i++) await page.keyboard.press('+');
+  assert.equal((await find('note')).scale, 3, 'clamped');
+  for (let i = 0; i < 40; i++) await page.keyboard.press('-');
+  assert.equal((await find('note')).scale, 0.5, 'clamped');
+  // Back to defaults removes the keys.
+  for (let i = 0; i < 5; i++) await page.keyboard.press('+');
+  await page.keyboard.press('Shift+]'); await page.keyboard.press('Shift+]');
+  const n = await find('note');
+  assert.ok(n.scale === undefined && n.rot === undefined, JSON.stringify(n));
+  // Still editable when transformed.
+  await page.keyboard.press(']');
+  await page.keyboard.press('F2');
+  assert.ok(await note.locator('input, textarea, [contenteditable]').count() > 0);
+  await page.keyboard.press('Escape');
+
+  const candle = el.locator('.item.candle').first();
+  await candle.focus();
+  await page.keyboard.press(']');
+  assert.equal((await find('candle')).rot, undefined);
+  await page.keyboard.press('+');
+  assert.equal((await find('candle')).scale, 1.1, 'candles can resize');
+  assert.ok(!/rotate\(\d/.test(await candle.evaluate(e => e.style.transform).then(t => t.replace('rotate(0deg)', ''))));
+  await ctx.close();
+});
+
+test('imported scale and rotation are clamped; candle rotation is dropped', async () => {
+  const { el, page, ctx } = await h.altar();
+  await el.evaluate(e => e.importState({
+    format: 'digital-ofrenda',
+    items: [
+      { type: 'marigold', x: 10, y: 10, scale: 9999, rot: 9999 },
+      { type: 'skull', x: 20, y: 20, scale: -5, rot: 'x' },
+      { type: 'candle', x: 30, y: 30, rot: 45 },
+      { type: 'pan', x: 40, y: 40, scale: 1, rot: 0 },
+    ],
+  }));
+  const items = (await state(page)).items;
+  assert.deepEqual([items[0].scale, items[0].rot], [3, 180]);
+  assert.deepEqual([items[1].scale, items[1].rot], [0.5, undefined]);
+  assert.equal(items[2].rot, undefined);
+  assert.ok(items[3].scale === undefined && items[3].rot === undefined);
+  await ctx.close();
+});
