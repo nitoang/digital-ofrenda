@@ -53,3 +53,12 @@ npm test
 ```
 
 They cover the default altar, Person / Pet / Mixed, 3 vs 7 tiers and the upgrade event, Start over, multiple photos, old single-photo saves, export/import (with the two-click confirm), and sanitizing of hostile imports. They fail on any page error or browser dialog.
+
+## Security
+
+- Everything that enters the altar (imports, saved data, and data from a shared store) is cleaned by the same allowlist: known item types only, clamped numbers, length-limited text, and photos only as inline `data:image/` PNG, JPEG, WebP or GIF (never SVG or remote URLs).
+- The component builds its page with `textContent` and DOM calls, and applies its styles as a constructed stylesheet, so it works under a strict Content-Security-Policy. `index.html` shows one:
+  `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'`.
+  Add `connect-src` for your own backend if you use shared storage, and set `frame-ancestors` as an HTTP header (a `<meta>` tag can't).
+- `shared.html` runs inside the claude.ai artifact host, which sets its own policy, so it has no CSP tag of its own.
+- GitHub Actions runs `npm test` on every pull request.

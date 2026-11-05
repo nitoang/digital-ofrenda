@@ -133,6 +133,10 @@
     return migratePhoto(state);
   };
 
+  // Data read back from localStorage or a shared store is untrusted too (another user, or script on the
+  // same origin, may have written it), so it gets the same cleaning as an import.
+  const cleanStored = data => (data && typeof data === 'object' && !Array.isArray(data) ? sanitize({ ...data, format: FORMAT }) : null);
+
   const defaultState = () => ({
     kind: 'person',
     tiers: 3,
@@ -285,11 +289,9 @@
     _load() {
       try {
         const raw = localStorage.getItem(this._key);
-        return raw ? this._migrate(JSON.parse(raw)) : null;
+        return raw ? cleanStored(JSON.parse(raw)) : null;
       } catch { return null; }
     }
-
-    _migrate(state) { return migratePhoto(state); }
 
     // ---------- shared storage ----------
     _onRemote(data, meta) {
@@ -315,11 +317,12 @@
       clearTimeout(this._retry);
       if (!this._pending) return;
       if (this._busy()) { this._retry = setTimeout(() => this._applyPending(), 800); return; }
-      const { data, json } = this._pending;
+      const { json } = this._pending;
       this._pending = null;
       this._lastJson = json;
-      this._state = migratePhoto({ ...defaultState(), ...JSON.parse(json) });
-      if (!Array.isArray(this._state.items)) this._state.items = [];
+      const next = cleanStored(JSON.parse(json));
+      if (!next) { this._say('The shared altar has data this page cannot read, so it was ignored.'); return; }
+      this._state = next;
       this._render();
     }
 
@@ -409,8 +412,15 @@
     _build() {
       this._root = this.attachShadow({ mode: 'open' });
       const colors = ['#ff4fa3', '#ff9a3c', '#2ec4b6', '#ffd23f', '#9b5de5', '#ff4fa3', '#ff9a3c', '#2ec4b6', '#ffd23f', '#9b5de5', '#ff4fa3', '#ff9a3c'];
-      this._root.innerHTML = `
-        <style>${css}</style>
+      // A constructed stylesheet needs no inline <style>, so a strict style-src policy works.
+      try {
+        if (!DigitalOfrenda._sheet) { DigitalOfrenda._sheet = new CSSStyleSheet(); DigitalOfrenda._sheet.replaceSync(css); }
+        this._root.adoptedStyleSheets = [DigitalOfrenda._sheet];
+      } catch {
+        const st = document.createElement('style'); st.textContent = css; this._root.appendChild(st);
+      }
+      const tpl = document.createElement('template');
+      tpl.innerHTML = `
         <div class="wrap">
           <fieldset class="kind">
             <legend>Type of ofrenda</legend>
@@ -426,7 +436,7 @@
             <p class="dates" data-placeholder="Dates (e.g. 1948 – 2024)"></p>
           </header>
           <div class="stage" role="group" aria-label="Ofrenda altar">
-            <div class="banner">${colors.map(c => `<i style="background:${c}"></i>`).join('')}</div>
+            <div class="banner"></div>
             <div class="tierlayer"></div>
             <div class="items"></div>
           </div>
@@ -446,8 +456,10 @@
           </div>
           <div class="status" role="status" aria-live="polite"></div>
         </div>`;
+      this._root.appendChild(tpl.content);
 
       const $ = s => this._root.querySelector(s);
+      for (const c of colors) { const i = document.createElement('i'); i.style.background = c; $('.banner').appendChild(i); }
       this._wrap = $('.wrap'); this._stage = $('.stage'); this._itemsEl = $('.items');
       this._tray = $('.tray'); this._status = $('.status'); this._file = $('.photo-input'); this._importEl = $('.import-input');
       this._nameEl = $('.name'); this._datesEl = $('.dates');
@@ -521,7 +533,8 @@
         if (!offered(type, kind)) continue;
         const b = document.createElement('button');
         b.type = 'button'; b.dataset.type = type; b.title = def.label;
-        b.innerHTML = `<b>${def.emoji}</b>${def.label}`;
+        const em = document.createElement('b'); em.textContent = def.emoji;
+        b.append(em, def.label);
         b.addEventListener('pointerdown', e => this._trayDown(e, type));
         b.addEventListener('keydown', e => {
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._add(type, 45 + Math.random() * 10, 45 + Math.random() * 10, true); }
