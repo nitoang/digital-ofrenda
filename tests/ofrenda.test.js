@@ -304,3 +304,97 @@ test('drag handles resize and rotate; candles get no rotate handle; viewers get 
   assert.equal(await v.el.locator('.handle').count(), 0);
   await v.ctx.close();
 });
+
+// ---- touch (emulated phone: 390x844, coarse pointer, real touch events via CDP) ----
+async function phone() {
+  const a = await h.altar({ touch: true });
+  await a.page.evaluate(() => { document.body.style.margin = '0'; document.body.insertAdjacentHTML('beforeend', '<div style="height:3000px"></div>'); });
+  const cdp = await a.ctx.newCDPSession(a.page);
+  const send = (type, x, y) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y, id: 1 }] });
+  const drag = async (x0, y0, x1, y1, steps = 10) => {
+    await send('touchStart', x0, y0);
+    for (let i = 1; i <= steps; i++) await send('touchMove', x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps);
+    await send('touchEnd');
+    await a.page.waitForTimeout(300);
+  };
+  const tap = (x, y) => drag(x, y, x, y, 0);
+  const centre = async loc => { const b = await loc.boundingBox(); return [b.x + b.width / 2, b.y + b.height / 2]; };
+  const bring = loc => loc.evaluate(e => e.scrollIntoView({ block: 'start' }));
+  return { ...a, drag, tap, centre, bring, scrollY: () => a.page.evaluate(() => scrollY) };
+}
+
+test('touch: a swipe over the altar or the tray scrolls the page, in edit and view mode', async () => {
+  const t = await phone();
+  for (const mode of ['edit', 'view']) {
+    await t.el.evaluate((e, m) => e.setAttribute('mode', m), mode);
+    for (const sel of ['.stage', '.tray-items button']) {
+      await t.page.evaluate(() => scrollTo(0, 0));
+      const target = t.el.locator(sel).first();
+      await t.bring(target);
+      await t.page.evaluate(() => scrollBy(0, -300));
+      const before = await t.scrollY();
+      const b = await target.boundingBox();
+      if (mode === 'view' && sel !== '.stage') continue; // the tray is hidden in view mode
+      await t.drag(b.x + 8, b.y + Math.min(b.height - 8, 120), b.x + 8, b.y - 150);
+      assert.ok(await t.scrollY() > before + 50, `${mode} ${sel}: page should scroll (${before} -> ${await t.scrollY()})`);
+    }
+  }
+  await t.ctx.close();
+});
+
+test('touch: tap a tray button to add, tap vs wobble on a candle, drag handles', async () => {
+  const t = await phone();
+  const count = () => t.el.locator('.item').count();
+  const n = await count();
+  const btn = t.el.locator('.tray-items button[data-type="skull"]');
+  await btn.evaluate(e => e.scrollIntoView({ block: 'center' }));
+  await t.tap(...await t.centre(btn));
+  assert.equal(await count(), n + 1, 'tap adds');
+
+  const candle = t.el.locator('.item.candle').first();
+  await t.bring(t.el.locator('.stage'));
+  const [cx, cy] = await t.centre(candle);
+  const left = () => candle.evaluate(e => e.style.left);
+  const lit = () => candle.evaluate(e => e.classList.contains('lit'));
+  const [l0, lit0] = [await left(), await lit()];
+  await t.drag(cx, cy, cx + 6, cy + 3, 3); // a finger wobbles a few pixels during a tap
+  assert.equal(await lit(), !lit0, 'tap with a small wobble still toggles the candle');
+  assert.equal(await left(), l0, 'and does not move it');
+  await t.drag(cx, cy, cx + 60, cy, 8);
+  assert.notEqual(await left(), l0, 'a real drag still moves it');
+
+  const marigold = t.el.locator('.item.marigold').first();
+  await marigold.evaluate(e => e.focus());
+  const hb = t.el.locator('.item.marigold .handle.resize').first();
+  assert.ok((await hb.boundingBox()).width >= 36, 'touch-sized handle');
+  const [hx, hy] = await t.centre(hb);
+  await t.drag(hx, hy, hx + 40, hy + 40);
+  const item = (await state(t.page)).items.find(i => i.type === 'marigold');
+  assert.ok(item.scale > 1, 'resized by touch: ' + item.scale);
+  await t.ctx.close();
+});
+
+// ---- keyboard ----
+test('keyboard: adding focuses the new item; actions are announced; labels carry size and rotation', async () => {
+  const { el, page, ctx } = await h.altar();
+  const status = () => el.locator('.status').textContent();
+  const label = () => el.locator('.item:focus').getAttribute('aria-label');
+  await el.locator('.tray-items button[data-type="heart"]').focus();
+  await page.keyboard.press('Enter');
+  assert.match(await status(), /Heart added/);
+  assert.equal(await label(), 'Heart', 'focus moved to the new item');
+  assert.ok(await el.locator('.item:focus').getAttribute('aria-describedby'), 'keys are described');
+  await page.keyboard.press('+');
+  assert.equal(await status(), 'Heart: size 110%.');
+  assert.equal(await label(), 'Heart, size 110%');
+  await page.keyboard.press(']');
+  assert.equal(await status(), 'Heart: rotated 15°.');
+  assert.equal(await label(), 'Heart, size 110%, rotated 15°');
+  await page.keyboard.press('Delete');
+  assert.equal(await status(), 'Heart removed.');
+  const candle = el.locator('.item.candle').first();
+  await candle.focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await status(), 'Candle unlit.');
+  await ctx.close();
+});

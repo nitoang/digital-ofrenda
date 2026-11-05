@@ -31,8 +31,10 @@ async function launch() {
   const browser = await chromium.launch();
   const errors = [];
   // Opens a page with a single empty edit-mode altar so localStorage state never leaks between tests.
-  async function altar({ attrs = '', features, state } = {}) {
-    const ctx = await browser.newContext({ viewport: { width: 900, height: 1200 } });
+  async function altar({ attrs = '', features, state, touch = false } = {}) {
+    const ctx = await browser.newContext(touch
+      ? { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } // a phone: coarse pointer, touch events
+      : { viewport: { width: 900, height: 1200 } });
     const page = await ctx.newPage();
     page.on('pageerror', e => errors.push(e.message));
     page.on('dialog', d => { errors.push('unexpected dialog: ' + d.message()); d.dismiss(); });
