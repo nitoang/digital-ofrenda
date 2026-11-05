@@ -252,3 +252,55 @@ test('imported scale and rotation are clamped; candle rotation is dropped', asyn
   assert.ok(items[3].scale === undefined && items[3].rot === undefined);
   await ctx.close();
 });
+
+test('drag handles resize and rotate; candles get no rotate handle; viewers get none', async () => {
+  const { el, page, ctx } = await h.altar();
+  const item = el.locator('.item.marigold').first();
+  const find = () => state(page).then(s => s.items.find(i => i.type === 'marigold'));
+  await item.focus();
+  const centre = async () => { const b = await item.boundingBox(); return [b.x + b.width / 2, b.y + b.height / 2]; };
+  const center = async loc => { const b = await loc.boundingBox(); return [b.x + b.width / 2, b.y + b.height / 2]; };
+  const [cx, cy] = await centre();
+
+  // Resize: drag the corner handle to twice its distance from the centre.
+  const [rx, ry] = await center(item.locator('.handle.resize'));
+  const d = Math.hypot(rx - cx, ry - cy);
+  await page.mouse.move(rx, ry); await page.mouse.down();
+  await page.mouse.move(cx + (rx - cx) * 2, cy + (ry - cy) * 2, { steps: 5 });
+  await page.mouse.up();
+  const a = await find();
+  assert.ok(a.scale > 1.8 && a.scale < 2.2, 'scale ' + a.scale);
+  assert.ok(Math.hypot(...(await center(item.locator('.handle.resize'))).map((v, i) => v - [cx, cy][i])) > d * 1.5, 'handle stays reachable');
+
+  // Rotate: drag the top handle a quarter turn to the right of the centre.
+  await item.focus();
+  const before = (await find()).x;
+  const [hx, hy] = await center(item.locator('.handle.rotate'));
+  const r = Math.hypot(hx - cx, hy - cy);
+  await page.mouse.move(hx, hy); await page.mouse.down();
+  await page.mouse.move(cx + r, cy, { steps: 8 });
+  await page.mouse.up();
+  const b = await find();
+  assert.ok(Math.abs(b.rot - 90) <= 2, 'rot ' + b.rot);
+  assert.equal(b.x, before, 'handle drag does not move the item');
+
+  // Shift snaps to 15 degrees.
+  await item.focus();
+  const [hx2, hy2] = await center(item.locator('.handle.rotate'));
+  await page.keyboard.down('Shift');
+  await page.mouse.move(hx2, hy2); await page.mouse.down();
+  await page.mouse.move(cx + 40, cy - 100, { steps: 6 });
+  await page.mouse.up();
+  await page.keyboard.up('Shift');
+  assert.equal((await find()).rot % 15, 0);
+
+  assert.equal(await el.locator('.item.candle').first().locator('.handle.rotate').count(), 0);
+  assert.equal(await el.locator('.item.candle').first().locator('.handle.resize').count(), 1);
+  await ctx.close();
+
+  const v = await h.altar();
+  assert.ok(await v.el.locator('.handle').count() > 0);
+  await v.el.evaluate(e => e.setAttribute('mode', 'view'));
+  assert.equal(await v.el.locator('.handle').count(), 0);
+  await v.ctx.close();
+});

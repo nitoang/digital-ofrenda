@@ -171,6 +171,15 @@
     .item { position: absolute; transform: translate(-50%, -50%); line-height: 1; cursor: default; border-radius: 8px; }
     .item:focus-visible { outline: 3px solid #ffd45c; outline-offset: 3px; }
     .editing .item { cursor: grab; touch-action: none; }
+    .handle { display: none; position: absolute; --k: calc(1px / var(--s, 1)); width: calc(26 * var(--k)); height: calc(26 * var(--k));
+              margin: calc(-13 * var(--k)); border-radius: 50%; background: #ffd45c; border: calc(2 * var(--k)) solid #3a2158;
+              box-shadow: 0 1px 4px rgba(0,0,0,.5); touch-action: none; z-index: 2; }
+    .handle.resize { right: 0; bottom: 0; cursor: nwse-resize; }
+    .handle.rotate { left: 50%; top: calc(-26 * var(--k)); cursor: grab; }
+    .handle.rotate::before { content: ''; position: absolute; left: 50%; top: 100%; width: calc(2 * var(--k)); height: calc(14 * var(--k));
+                             margin-left: calc(-1 * var(--k)); background: #ffd45c; }
+    .editing .item:focus .handle, .editing .item.adjusting .handle { display: block; }
+    @media (pointer: coarse) { .handle { --k: calc(1.5px / var(--s, 1)); } }
     .item.dragging { cursor: grabbing; opacity: .85; filter: drop-shadow(0 6px 8px rgba(0,0,0,.5)); }
     .emoji { font-size: 7.5cqw; display: block; }
     .item.candle { cursor: pointer; }
@@ -431,7 +440,7 @@
               <button type="button" class="ghost-btn reset-btn">Start over</button>
               <input type="file" class="photo-input" accept="image/*" hidden>
               <input type="file" class="import-input" accept=".json,application/json" hidden>
-              <span class="hint">Click a candle to light it. Click a photo frame to change its photo. Double-click a note to edit. With an item selected: arrows move it, + / − resize it, [ / ] rotate it (candles stay upright).</span>
+              <span class="hint">Click a candle to light it. Click a photo frame to change its photo. Double-click a note to edit. With an item selected: arrows move it, + / − resize it, [ / ] rotate it (candles stay upright). Or drag the round handles.</span>
             </div>
           </div>
           <div class="status" role="status" aria-live="polite"></div>
@@ -584,6 +593,14 @@
 
       this._label(el, item);
       this._place(el, item);
+      if (this._editable) {
+        for (const kind of def.candle ? ['resize'] : ['resize', 'rotate']) {
+          const hd = document.createElement('span');
+          hd.className = 'handle ' + kind; hd.setAttribute('aria-hidden', 'true');
+          hd.addEventListener('pointerdown', e => this._handleDown(e, el, item, kind));
+          el.appendChild(hd);
+        }
+      }
       el.addEventListener('pointerdown', e => this._itemDown(e, el, item));
       el.addEventListener('keydown', e => this._itemKey(e, el, item));
       if (item.type === 'note') el.addEventListener('dblclick', () => this._editNote(el, item));
@@ -601,6 +618,7 @@
       el.style.left = item.x + '%';
       el.style.top = item.y + '%';
       const scale = item.scale ?? 1, rot = ITEMS[item.type].candle ? 0 : (item.rot ?? 0);
+      el.style.setProperty('--s', scale);
       el.style.transform = scale === 1 && !rot ? '' : `translate(-50%, -50%) rotate(${rot}deg) scale(${scale})`;
       el.style.zIndex = Math.round(item.y * 10); // lower on the altar = in front
     }
@@ -636,6 +654,46 @@
       } else if (item.type === 'photo' && this._editable) {
         this._pickPhoto(item);
       }
+    }
+
+    // ---------- resize / rotate handles ----------
+    // Both work from the item's centre: resize by distance from it, rotate by angle around it.
+    _handleDown(e, el, item, kind) {
+      if (e.button !== 0) return;
+      e.stopPropagation(); e.preventDefault();
+      el.focus({ preventScroll: true });
+      const hd = e.currentTarget;
+      const r = el.getBoundingClientRect(); // rotation about the centre leaves the bounding box centred
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const d0 = Math.hypot(e.clientX - cx, e.clientY - cy) || 1;
+      const a0 = Math.atan2(e.clientY - cy, e.clientX - cx);
+      const scale0 = item.scale ?? 1, rot0 = item.rot ?? 0;
+      hd.setPointerCapture(e.pointerId);
+      el.classList.add('adjusting');
+
+      const move = ev => {
+        if (kind === 'resize') {
+          const v = clamp(scale0 * Math.hypot(ev.clientX - cx, ev.clientY - cy) / d0, MIN_SCALE, MAX_SCALE);
+          item.scale = Math.round(v * 100) / 100;
+        } else {
+          let deg = rot0 + (Math.atan2(ev.clientY - cy, ev.clientX - cx) - a0) * 180 / Math.PI;
+          deg = ev.shiftKey ? Math.round(deg / 15) * 15 : Math.round(deg);
+          item.rot = ((deg % 360) + 540) % 360 - 180;
+        }
+        if (item.scale === 1) delete item.scale;
+        if (item.rot === 0) delete item.rot;
+        this._place(el, item);
+      };
+      const up = () => {
+        hd.removeEventListener('pointermove', move);
+        hd.removeEventListener('pointerup', up);
+        hd.removeEventListener('pointercancel', up);
+        el.classList.remove('adjusting');
+        this._save();
+      };
+      hd.addEventListener('pointermove', move);
+      hd.addEventListener('pointerup', up);
+      hd.addEventListener('pointercancel', up);
     }
 
     // ---------- dragging items already on the altar ----------
