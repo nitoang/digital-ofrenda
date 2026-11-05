@@ -57,9 +57,9 @@
     beer:     { emoji: '🍺', label: 'Beer', for: 'person' },
     cigs:     { emoji: '🚬', label: 'Cigarettes', for: 'person' },
     guitar:   { emoji: '🎸', label: 'Guitar / pick', for: 'person' },
-    domino:   { emoji: '🎲', label: 'Dominoes / games', for: 'person' },
+    domino:   { emoji: '🃏', label: 'Dominoes / cards', for: 'person' },
     jersey:   { emoji: '👕', label: 'Soccer jersey', for: 'person' },
-    cleats:   { emoji: '⚽', label: 'Cleats / ball', for: 'person' },
+    cleats:   { emoji: '👟', label: 'Cleats / sneakers', for: 'person' },
     toy:      { emoji: '🧸', label: 'Toy (for children)' },
     bowl:     { emoji: '🥣', label: 'Pet water bowl', for: 'pet' },
     kibble:   { emoji: '🦴', label: 'Pet treat / kibble', for: 'pet' },
@@ -505,7 +505,7 @@
       for (const [type, def] of Object.entries(ITEMS)) {
         if (!offered(type, kind)) continue;
         const b = document.createElement('button');
-        b.type = 'button'; b.dataset.type = type;
+        b.type = 'button'; b.dataset.type = type; b.title = def.label;
         b.innerHTML = `<b>${def.emoji}</b>${def.label}`;
         b.addEventListener('pointerdown', e => this._trayDown(e, type));
         b.addEventListener('keydown', e => {
@@ -589,6 +589,7 @@
       const base = ITEMS[item.type].label;
       const extra = ITEMS[item.type].candle ? (item.lit ? ', lit' : ', unlit') : item.type === 'note' ? ': ' + (item.text ?? DEFAULT_NOTE) : '';
       el.setAttribute('aria-label', base + extra);
+      el.title = base; // hover tooltip
     }
 
     _place(el, item) {

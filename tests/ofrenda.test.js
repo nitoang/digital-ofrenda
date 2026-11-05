@@ -180,3 +180,15 @@ test('import rejects junk and sanitizes hostile data', async () => {
   assert.equal(await el.locator('.name img').count(), 0, 'name is text, not HTML');
   await ctx.close();
 });
+
+test('every tray button and placed item has a name and a hover tooltip', async () => {
+  const { el, ctx } = await h.altar();
+  await el.locator('label:has(input[value="mixed"])').click();
+  const tray = await el.locator('.tray-items button').evaluateAll(bs => bs.map(b => [b.title, b.textContent.trim()]));
+  assert.ok(tray.length >= 30);
+  for (const [title, text] of tray) assert.ok(title && text.includes(title), 'tray button: ' + text);
+  const placed = await el.locator('.item').evaluateAll(is => is.map(i => [i.title, i.getAttribute('aria-label')]));
+  assert.ok(placed.length > 0);
+  for (const [title, aria] of placed) assert.ok(title && aria.startsWith(title), 'item: ' + aria);
+  await ctx.close();
+});
