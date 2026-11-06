@@ -62,3 +62,8 @@ They cover the default altar, Person / Pet / Mixed, 3 vs 7 tiers and the upgrade
   Add `connect-src` for your own backend if you use shared storage, and set `frame-ancestors` as an HTTP header (a `<meta>` tag can't).
 - `shared.html` runs inside the claude.ai artifact host, which sets its own policy, so it has no CSP tag of its own.
 - GitHub Actions runs `npm test` on every pull request.
+- To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+## License
+
+All rights reserved. See [LICENSE](LICENSE).
