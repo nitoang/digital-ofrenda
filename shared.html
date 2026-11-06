@@ -46,9 +46,10 @@
       save: (id, state) => db.doc('ofrendas/' + id).set(state),
     };
     mode = canWrite ? 'edit' : 'view';
-    who.innerHTML = canWrite
-      ? '<b>Shared live.</b> Everyone with this link sees the same altar, and changes appear on their screens as you make them.'
-      : '<b>Shared live.</b> You can see the altar as it changes. You can light candles on your own screen, but only contributors can change the shared altar.';
+    const lead = document.createElement('b'); lead.textContent = 'Shared live.';
+    who.replaceChildren(lead, canWrite
+      ? ' Everyone with this link sees the same altar, and changes appear on their screens as you make them.'
+      : ' You can see the altar as it changes. You can light candles on your own screen, but only contributors can change the shared altar.');
   } else {
     who.textContent = 'Sharing is not available here, so this altar is saved only in this browser.';
   }

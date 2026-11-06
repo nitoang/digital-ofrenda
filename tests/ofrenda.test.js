@@ -398,3 +398,89 @@ test('keyboard: adding focuses the new item; actions are announced; labels carry
   assert.equal(await status(), 'Candle unlit.');
   await ctx.close();
 });
+
+// ---- security ----
+const hostile = {
+  kind: '<img src=x onerror=alert(1)>', tiers: 99, name: 'N'.repeat(500), dates: 5,
+  items: [
+    { id: '"><script>', type: 'photo', x: 1e9, y: -5, src: 'javascript:alert(1)' },
+    { id: 'svg', type: 'photo', x: 50, y: 50, src: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' },
+    { id: 'n', type: 'note', x: 50, y: 50, text: '<img src=x onerror=alert(1)>' + 'x'.repeat(500), scale: 1e9, rot: 'spin' },
+    { id: 'evil', type: '__proto__', x: 1, y: 1 },
+    'not an object', null,
+  ],
+};
+
+test('saved data is cleaned when it loads, not only on import', async () => {
+  const { el, page, ctx } = await h.altar({ state: hostile });
+  const s = await page.evaluate(() => JSON.parse(JSON.stringify(document.querySelector('#t').exportState())));
+  assert.equal(s.kind, 'person');
+  assert.equal(s.tiers, 3);
+  assert.equal(s.name.length, 80);
+  assert.equal(s.dates, '');
+  assert.equal(s.items.length, 3, 'unknown item types and junk entries are dropped');
+  assert.ok(s.items.every(i => !i.src || i.src.startsWith('data:image/png') ), 'no javascript: or svg sources');
+  assert.ok(s.items.every(i => /^[\w-]+$/.test(i.id)), 'ids are plain');
+  const note = s.items.find(i => i.type === 'note');
+  assert.equal(note.text.length, 80);
+  assert.equal(note.scale, 3);
+  assert.equal(note.rot, undefined);
+  assert.equal(await el.locator('img').count(), 0);
+  await ctx.close();
+});
+
+test('data arriving from a shared store is cleaned too', async () => {
+  const { browser } = h;
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  page.on('pageerror', e => h.errors.push(e.message));
+  await page.goto(require('./helpers').url('tests/blank.html'));
+  await page.evaluate(hostile => {
+    window.__emit = null;
+    customElements.get('digital-ofrenda').storage = {
+      canWrite: false,
+      subscribe: (id, onState) => { window.__emit = d => onState(d, { fromCache: false, hasPendingWrites: false }); setTimeout(() => window.__emit(hostile), 0); return () => {}; },
+      save: async () => {},
+    };
+    document.body.insertAdjacentHTML('beforeend', '<digital-ofrenda id="s" mode="view"></digital-ofrenda>');
+  }, hostile);
+  const el = page.locator('digital-ofrenda#s');
+  await until(async () => (await el.locator('.item').count()) === 3);
+  assert.equal(await el.locator('img').count(), 0, 'no hostile image reached the page');
+  assert.equal(await el.locator('.name').textContent(), 'N'.repeat(80));
+  // Data that is not an ofrenda at all is ignored, not rendered.
+  await page.evaluate(() => window.__emit({ format: 'other', items: 'x' }));
+  await page.evaluate(() => window.__emit([1, 2, 3]));
+  await new Promise(r => setTimeout(r, 1000));
+  assert.equal(await el.locator('.item').count(), 3);
+  await ctx.close();
+});
+
+test('the demo page works under its strict Content-Security-Policy', async () => {
+  const http = require('node:http'), fs = require('node:fs'), path = require('node:path');
+  const root = path.resolve(__dirname, '..');
+  const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
+  const server = http.createServer((req, res) => {
+    const f = path.join(root, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
+    if (!f.startsWith(root) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404).end(); return; }
+    res.writeHead(200, { 'content-type': types[path.extname(f)] || 'application/octet-stream' }).end(fs.readFileSync(f));
+  }).listen(0);
+  const port = server.address().port;
+  const ctx = await h.browser.newContext();
+  const page = await ctx.newPage();
+  const violations = [];
+  page.on('pageerror', e => h.errors.push(e.message));
+  page.on('console', m => { if (/Content Security Policy|Refused to/i.test(m.text())) violations.push(m.text()); });
+  await page.goto(`http://localhost:${port}/`);
+  const html = await page.content();
+  assert.match(html, /Content-Security-Policy/);
+  const edit = page.locator('digital-ofrenda[mode="edit"]');
+  await edit.locator('.tray-items button[data-type="heart"]').focus();
+  await page.keyboard.press('Enter');
+  await until(async () => (await edit.locator('.item[aria-label^="Heart"]').count()) === 1);
+  assert.equal(await edit.locator('.banner i').count(), 12, 'banner renders without inline styles');
+  assert.ok(await edit.evaluate(e => e.shadowRoot.adoptedStyleSheets.length === 1), 'styles are applied as a constructed stylesheet');
+  assert.deepEqual(violations, []);
+  await ctx.close();
+  server.close();
+});
