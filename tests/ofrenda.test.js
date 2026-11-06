@@ -115,6 +115,37 @@ test('multiple photos: fill empty frame, then add more, then replace one', async
   await ctx.close();
 });
 
+test('photos: 2 free, a third fires upgrade-request, extra-photos lifts the cap', async () => {
+  let { el, page, ctx } = await h.altar();
+  const photos = async () => (await state(page)).items.filter(i => i.type === 'photo' && i.src);
+  await page.evaluate(() => { window.__up = []; document.addEventListener('upgrade-request', e => window.__up.push(e.detail.feature)); });
+  const png = tmpFile('a.png', PNG);
+  for (let n = 1; n <= 2; n++) {
+    const [fc] = await Promise.all([page.waitForEvent('filechooser'), el.locator('.photo-btn').click()]);
+    await fc.setFiles(png);
+    await until(async () => (await photos()).length === n);
+  }
+  await el.locator('.photo-btn').click();
+  assert.deepEqual(await page.evaluate(() => window.__up), ['extraPhotos']);
+  assert.equal((await photos()).length, 2);
+  // New frames land at a random spot; park the second in a corner so it can't cover the first.
+  await el.evaluate(e => { const f = e._state.items.filter(i => i.type === 'photo')[1]; f.x = 90; f.y = 90; e._render(); });
+  const first = (await photos())[0].src;
+  const [fc] = await Promise.all([page.waitForEvent('filechooser'), el.locator('.item.photo').first().click()]);
+  await fc.setFiles(tmpFile('b.png', solidPng(4, 4, 255, 0, 0)));
+  await until(async () => (await photos())[0].src !== first);
+  assert.equal((await photos()).length, 2, 'replacing stays free and adds no frame');
+  await ctx.close();
+
+  ({ el, page, ctx } = await h.altar({ attrs: 'extra-photos' }));
+  for (let n = 1; n <= 3; n++) {
+    const [fc2] = await Promise.all([page.waitForEvent('filechooser'), el.locator('.photo-btn').click()]);
+    await fc2.setFiles(png);
+    await until(async () => (await state(page)).items.filter(i => i.type === 'photo' && i.src).length === n);
+  }
+  await ctx.close();
+});
+
 test('migrates an old single-photo save', async () => {
   const src = 'data:image/png;base64,' + PNG.toString('base64');
   const { el, page, ctx } = await h.altar({ state: { kind: 'person', name: 'Abuela', dates: '', photo: src, items: [{ id: 'p1', type: 'photo', x: 50, y: 24 }] } });

@@ -78,6 +78,7 @@
 
   const DEFAULT_NOTE = 'Siempre en nuestro corazón';
   const PHOTO_MAX_PX = 480;
+  const FREE_PHOTOS = 2;
   const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
   const uid = () => Math.random().toString(36).slice(2, 10);
   const FORMAT = 'digital-ofrenda', VERSION = 1;
@@ -238,12 +239,12 @@
   `;
 
   class DigitalOfrenda extends HTMLElement {
-    static get observedAttributes() { return ['mode', 'seven-tiers']; }
+    static get observedAttributes() { return ['mode', 'seven-tiers', 'extra-photos']; }
 
     static storage = null;
     // Host-controlled feature flags. The component can't take payment, so a host page
     // enables paid options here (or with attributes) and answers 'upgrade-request' events.
-    static features = { sevenTiers: false };
+    static features = { sevenTiers: false, extraPhotos: false };
 
     connectedCallback() {
       this._key = 'ofrenda:' + (this.id || 'default');
@@ -278,6 +279,24 @@
 
     get _sevenAllowed() {
       return DigitalOfrenda.features?.sevenTiers === true || (this.hasAttribute('seven-tiers') && this.getAttribute('seven-tiers') !== 'false');
+    }
+
+    // Free altars hold FREE_PHOTOS photos; more is a host-enabled upgrade.
+    get _extraPhotosAllowed() {
+      return DigitalOfrenda.features?.extraPhotos === true || (this.hasAttribute('extra-photos') && this.getAttribute('extra-photos') !== 'false');
+    }
+
+    // Would putting a photo into `target` (a frame, or null for "next empty/new frame") exceed the free limit?
+    // Replacing a photo that is already there is always fine; existing photos are never removed.
+    _photoBlocked(target) {
+      if (this._extraPhotosAllowed) return false;
+      if (target && this._state.items.includes(target) && target.src) return false;
+      return this._state.items.filter(i => i.type === 'photo' && i.src).length >= FREE_PHOTOS;
+    }
+
+    _requestPhotoUpgrade() {
+      this.dispatchEvent(new CustomEvent('upgrade-request', { bubbles: true, composed: true, detail: { feature: 'extraPhotos' } }));
+      this._say(`Free altars hold ${FREE_PHOTOS} photos. Adding more is an upgrade.`);
     }
 
     // A saved 7-tier altar shows as 3 tiers (data kept) while the feature is off.
@@ -862,11 +881,13 @@
 
     // item = the frame to fill; null = fill the first empty frame, or add a new one.
     _pickPhoto(item) {
+      if (this._photoBlocked(item)) { this._requestPhotoUpgrade(); return; }
       this._photoTarget = item;
       this._file.click();
     }
 
     async _setPhoto(file, item) {
+      if (this._photoBlocked(item)) { this._requestPhotoUpgrade(); return; }
       const url = URL.createObjectURL(file);
       try {
         const img = new Image();

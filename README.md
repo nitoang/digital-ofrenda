@@ -42,6 +42,20 @@ document.addEventListener('upgrade-request', e => showPricing(e.detail.feature))
 
 A saved or imported 7-tier altar shows as 3 tiers while the feature is off. The setting is kept, so enabling it later restores the 7 tiers.
 
+## Photos (2 free, more as an upgrade)
+
+An altar can hold any number of photo frames, but only 2 photos are free. Adding a third photo is gated the same way as the seven-tier altar: the host enables it, and otherwise the component fires `upgrade-request` with `detail.feature === 'extraPhotos'` so the host can show a paywall.
+
+```html
+<digital-ofrenda id="maria" mode="edit" extra-photos></digital-ofrenda>
+```
+
+```js
+DigitalOfrenda.features = { sevenTiers: true, extraPhotos: true };
+```
+
+Replacing a photo that is already on the altar is always allowed, and an altar that already has more than 2 photos (an import, or the feature was on earlier) keeps them all. The limit only blocks adding another.
+
 ## Tests
 
 Browser tests (Playwright + Node's built-in test runner) load the pages straight from disk:
