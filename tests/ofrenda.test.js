@@ -135,6 +135,12 @@ test('photos: 2 free, a third fires upgrade-request, extra-photos lifts the cap'
   await fc.setFiles(tmpFile('b.png', solidPng(4, 4, 255, 0, 0)));
   await until(async () => (await photos())[0].src !== first);
   assert.equal((await photos()).length, 2, 'replacing stays free and adds no frame');
+  // Can't create a third photo frame from the tray either.
+  const frames = async () => (await state(page)).items.filter(i => i.type === 'photo').length;
+  const before = await frames();
+  await el.locator('.tray button[data-type="photo"]').click();
+  assert.equal(await frames(), before, 'no new frame');
+  assert.deepEqual(await page.evaluate(() => window.__up), ['extraPhotos', 'extraPhotos']);
   await ctx.close();
 
   ({ el, page, ctx } = await h.altar({ attrs: 'extra-photos' }));

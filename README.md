@@ -44,7 +44,7 @@ A saved or imported 7-tier altar shows as 3 tiers while the feature is off. The 
 
 ## Photos (2 free, more as an upgrade)
 
-An altar can hold any number of photo frames, but only 2 photos are free. Adding a third photo is gated the same way as the seven-tier altar: the host enables it, and otherwise the component fires `upgrade-request` with `detail.feature === 'extraPhotos'` so the host can show a paywall.
+An altar can hold any number of photo frames, but only 2 photos are free. Adding a third photo, or a third photo frame, is gated the same way as the seven-tier altar: the host enables it, and otherwise the component fires `upgrade-request` with `detail.feature === 'extraPhotos'` so the host can show a paywall.
 
 ```html
 <digital-ofrenda id="maria" mode="edit" extra-photos></digital-ofrenda>

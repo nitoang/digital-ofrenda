@@ -659,6 +659,10 @@
     }
 
     _add(type, x, y, byKeyboard = false) {
+      // Free altars can't even create a third photo frame.
+      if (type === 'photo' && !this._extraPhotosAllowed && this._state.items.filter(i => i.type === 'photo').length >= FREE_PHOTOS) {
+        this._requestPhotoUpgrade(); return;
+      }
       const item = { id: uid(), type, x: clamp(x, 4, 96), y: clamp(y, 12, 96) };
       if (ITEMS[type].candle) item.lit = true;
       if (type === 'note') item.text = DEFAULT_NOTE;
