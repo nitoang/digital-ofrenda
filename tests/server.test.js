@@ -21,6 +21,8 @@ test('server item allowlist matches ofrenda.js', async () => {
   assert.ok(candles.length >= 2 && candles.every(c => v.ITEM_TYPES.includes(c)));
   const free = Number(/const FREE_PHOTOS = (\d+)/.exec(src)[1]);
   assert.equal(v.FREE_PHOTOS, free);
+  const feats = /static features = \{([^}]*)\}/.exec(src)[1].split(',').map(x => x.split(':')[0].trim()).filter(Boolean);
+  assert.deepEqual([...v.FEATURES].sort(), feats.sort(), 'paid feature names match the component');
 });
 
 test('free altar: 2 photos ok, 3 rejected with 402', async () => {
@@ -34,15 +36,31 @@ test('empty frames do not count; paid lifts the cap', async () => {
   const { v } = await load();
   assert.equal(v.validateOfrenda(altar(frame('a', png()), frame('b', png()), frame('c'))).ok, true);
   const three = altar(frame('a', png()), frame('b', png()), frame('c', png()));
-  assert.equal(v.validateOfrenda(three, { paid: true }).ok, true);
-  assert.equal(v.validateOfrenda(three, { paid: 'yes' }).ok, false, 'only boolean true counts as paid');
+  assert.equal(v.validateOfrenda(three, { entitlements: { extraPhotos: true } }).ok, true);
+  assert.equal(v.validateOfrenda(three, { entitlements: { extraPhotos: 'yes' } }).ok, false, 'only boolean true counts');
+  assert.equal(v.validateOfrenda(three, { entitlements: { sevenTiers: true } }).ok, false, 'tiers upgrade does not unlock photos');
+  assert.equal(v.validateOfrenda(three).feature, 'extraPhotos');
 });
 
 test('lapsed altar keeps what it has but cannot grow', async () => {
   const { v } = await load();
   const four = altar(...'abcd'.split('').map(i => frame(i, png())));
-  assert.equal(v.validateOfrenda(four, { previousPhotoCount: 4 }).ok, true);
-  assert.equal(v.validateOfrenda(altar(...'abcde'.split('').map(i => frame(i, png()))), { previousPhotoCount: 4 }).ok, false);
+  assert.equal(v.validateOfrenda(four, { previous: four }).ok, true);
+  assert.equal(v.validateOfrenda(altar(...'abcde'.split('').map(i => frame(i, png()))), { previous: four }).ok, false);
+});
+
+test('seven tiers: needs the upgrade, but a saved 7-tier altar keeps it', async () => {
+  const { v } = await load();
+  const seven = { ...altar(), tiers: 7 };
+  const r = v.validateOfrenda(seven);
+  assert.deepEqual([r.ok, r.status, r.code, r.feature], [false, 402, 'tiers_locked', 'sevenTiers']);
+  assert.equal(v.validateOfrenda({ ...altar(), tiers: 3 }).ok, true);
+  assert.equal(v.validateOfrenda(seven, { entitlements: { sevenTiers: true } }).state.tiers, 7);
+  assert.equal(v.validateOfrenda(seven, { entitlements: { extraPhotos: true } }).ok, false, 'photos upgrade does not unlock tiers');
+  assert.equal(v.validateOfrenda(seven, { entitlements: { sevenTiers: 1 } }).ok, false, 'only boolean true counts');
+  assert.equal(v.validateOfrenda(seven, { previous: seven }).state.tiers, 7, 'lapsed altar keeps what it has');
+  assert.equal(v.validateOfrenda({ ...altar(), tiers: '7' }).state.tiers, 3, 'junk values fall back to 3');
+  assert.equal(v.validateOfrenda({ ...altar(), tiers: 3 }, { previous: seven }).state.tiers, 3, 'can always go back to 3');
 });
 
 test('only inline PNG/JPEG/WebP/GIF with matching bytes', async () => {
@@ -131,11 +149,30 @@ test('worker: save, read back, enforce cap, paid unlocks it', async () => {
   assert.equal(blocked.status, 402);
   assert.equal((await blocked.json()).upgrade, 'extraPhotos');
   assert.equal(JSON.parse(e.OFRENDAS.m.get('ofrenda:maria')).items.length, 2, 'stored altar unchanged');
-  e.OFRENDAS.m.set('paid:maria', '1');
+  e.OFRENDAS.m.set('feature:maria:extraPhotos', '1');
   assert.equal((await w.default.fetch(put(three), e)).status, 200);
-  e.OFRENDAS.m.delete('paid:maria'); // refunded: keeps 3, cannot add a 4th
+  e.OFRENDAS.m.delete('feature:maria:extraPhotos'); // refunded: keeps 3, cannot add a 4th
   assert.equal((await w.default.fetch(put(three), e)).status, 200);
   assert.equal((await w.default.fetch(put(altar(...'abcd'.split('').map(i => frame(i, png())))), e)).status, 402);
+});
+
+test('worker: seven tiers are enforced and unlocked per altar', async () => {
+  const { w } = await load();
+  const e = withOwner(env());
+  const seven = { ...altar(), tiers: 7 };
+  const denied = await w.default.fetch(put(seven), e);
+  assert.equal(denied.status, 402);
+  assert.equal((await denied.json()).upgrade, 'sevenTiers');
+  assert.equal(e.OFRENDAS.m.has('ofrenda:maria'), false);
+  e.OFRENDAS.m.set('feature:maria:extraPhotos', '1');
+  assert.equal((await w.default.fetch(put(seven), e)).status, 402, 'photos upgrade does not unlock tiers');
+  e.OFRENDAS.m.set('feature:maria:sevenTiers', '1');
+  assert.equal((await w.default.fetch(put(seven), e)).status, 200);
+  e.OFRENDAS.m.delete('feature:maria:sevenTiers'); // refunded: still saves, still 7
+  assert.equal((await w.default.fetch(put(seven), e)).status, 200);
+  assert.equal(JSON.parse(e.OFRENDAS.m.get('ofrenda:maria')).tiers, 7);
+  e.OFRENDAS.m.delete('ofrenda:maria');
+  assert.equal((await w.default.fetch(put(seven), e)).status, 402, 'a different altar cannot reuse that');
 });
 
 test('worker: body size, bad json, bad ids, and no client-supplied paid flag', async () => {
@@ -149,7 +186,7 @@ test('worker: body size, bad json, bad ids, and no client-supplied paid flag', a
   assert.equal((await w.default.fetch(new Request('https://api.test/ofrendas/maria', { method: 'DELETE' }), e)).status, 405);
 });
 
-const stripeEvent = (over = {}) => JSON.stringify({ type: 'checkout.session.completed', data: { object: { payment_status: 'paid', client_reference_id: 'maria', ...over } } });
+const stripeEvent = (over = {}) => JSON.stringify({ type: 'checkout.session.completed', data: { object: { payment_status: 'paid', client_reference_id: 'maria', metadata: { feature: 'sevenTiers' }, ...over } } });
 const sign = (body, secret = 'whsec_test', t = Math.floor(Date.now() / 1000)) =>
   `t=${t},v1=${crypto.createHmac('sha256', secret).update(`${t}.${body}`).digest('hex')}`;
 const hook = (body, sig) => new Request('https://api.test/stripe/webhook', { method: 'POST', headers: { 'stripe-signature': sig }, body });
@@ -162,12 +199,19 @@ test('worker: Stripe webhook marks paid only for valid, fresh, paid events', asy
   assert.equal((await w.default.fetch(hook(body, sign(body, 'whsec_other')), e)).status, 400);
   assert.equal((await w.default.fetch(hook(body, sign(body, 'whsec_test', Math.floor(Date.now() / 1000) - 3600)), e)).status, 400, 'stale timestamp');
   assert.equal((await w.default.fetch(hook(body + ' ', sign(body)), e)).status, 400, 'tampered body');
-  assert.equal(e.OFRENDAS.m.has('paid:maria'), false);
+  assert.equal(e.OFRENDAS.m.size, 0);
   const unpaid = stripeEvent({ payment_status: 'unpaid' });
   assert.equal((await w.default.fetch(hook(unpaid, sign(unpaid)), e)).status, 200);
   const badId = stripeEvent({ client_reference_id: '../x' });
   assert.equal((await w.default.fetch(hook(badId, sign(badId)), e)).status, 200);
-  assert.equal([...e.OFRENDAS.m.keys()].length, 0);
+  for (const metadata of [undefined, {}, { feature: 'admin' }, { feature: '__proto__' }]) {
+    const odd = stripeEvent({ metadata });
+    assert.equal((await w.default.fetch(hook(odd, sign(odd)), e)).status, 200);
+  }
+  assert.equal(e.OFRENDAS.m.size, 0, 'unknown or missing feature unlocks nothing');
   assert.equal((await w.default.fetch(hook(body, sign(body)), e)).status, 200);
-  assert.equal(e.OFRENDAS.m.get('paid:maria'), '1');
+  assert.deepEqual([...e.OFRENDAS.m.entries()], [['feature:maria:sevenTiers', '1']]);
+  const photos = stripeEvent({ metadata: { feature: 'extraPhotos' } });
+  assert.equal((await w.default.fetch(hook(photos, sign(photos)), e)).status, 200);
+  assert.equal(e.OFRENDAS.m.get('feature:maria:extraPhotos'), '1');
 });

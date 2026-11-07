@@ -61,19 +61,19 @@ Replacing a photo that is already on the altar is always allowed, and an altar t
 The 2-photo limit in the browser is a courtesy, not protection: anyone can call your storage endpoint directly. If you use shared storage, run the same checks on whatever receives `storage.save()`. `server/validate.mjs` is a dependency-free module (Cloudflare Workers, Node 18+, Deno, Bun) that does it:
 
 ```js
-import { validateOfrenda, countPhotos } from './server/validate.mjs';
+import { validateOfrenda } from './server/validate.mjs';
 
-const r = validateOfrenda(body, { paid, previousPhotoCount: countPhotos(stored) });
-if (!r.ok) return reply(r.status, { error: r.code });   // 402 photo_limit, 422 bad_image, 413 too_large, 400 bad_format
+const r = validateOfrenda(body, { entitlements: { extraPhotos, sevenTiers }, previous: stored });
+if (!r.ok) return reply(r.status, { error: r.code, upgrade: r.feature });   // 402 photo_limit / tiers_locked, 422 bad_image, 413 too_large, 400 bad_format
 await save(r.state);                                      // store the cleaned state, never the raw body
 ```
 
-- `paid` must come from your own payment records, never from the request. Only boolean `true` counts.
+- `entitlements` must come from your own payment records, never from the request. Only boolean `true` counts, and each upgrade is separate: buying extra photos does not unlock seven tiers, or the reverse.
 - It applies the same allowlist as the component (item types, clamped numbers and text), accepts only inline PNG/JPEG/WebP/GIF whose first bytes match the declared type, caps each photo (about 300 KB) and the whole altar (2 MB), and returns a cleaned copy.
-- `previousPhotoCount` mirrors the browser rule that existing photos are never deleted: an altar whose upgrade lapsed can keep and re-save what it has, but not add more.
+- `previous` (the altar currently stored) mirrors the browser rule that saved data is never taken away: an altar whose upgrade lapsed can keep and re-save the photos it has and a 7-tier setting it already has, but cannot add photos past 2 or switch to 7 tiers. Switching back to 3 tiers is always allowed. A refused upgrade returns 402 with `feature` set to `extraPhotos` or `sevenTiers`, the same names as `upgrade-request`.
 - It does not check who may write. That is your server's job.
 
-`server/worker.mjs` is a complete example for Cloudflare Workers + KV (config in `server/wrangler.example.toml`): `GET/PUT /ofrendas/:id`, a per-altar edit token (stored as a SHA-256 hash; no owner record means no writes), a request body cap that is enforced while streaming, and a Stripe webhook (`checkout.session.completed`, signature and timestamp verified) that sets the paid flag from `client_reference_id`. Wire it to the component by pointing `DigitalOfrenda.storage.save` at the PUT route. Things it leaves to you: creating the owner record at signup, handling refunds (clear `paid:<id>`), and strict write ordering (KV can race; use a Durable Object or D1 if that matters). The seven-tier option is not enforced there; `validateOfrenda` currently passes `tiers: 7` through.
+`server/worker.mjs` is a complete example for Cloudflare Workers + KV (config in `server/wrangler.example.toml`): `GET/PUT /ofrendas/:id`, a per-altar edit token (stored as a SHA-256 hash; no owner record means no writes), a request body cap that is enforced while streaming, and a Stripe webhook (`checkout.session.completed`, signature and timestamp verified) that unlocks one upgrade: it stores `feature:<id>:<name>` using `client_reference_id` as the altar ID and `metadata.feature` (`extraPhotos` or `sevenTiers`) as the name. Set both when your server creates the Checkout session; a missing or unknown feature unlocks nothing. Wire it to the component by pointing `DigitalOfrenda.storage.save` at the PUT route. Things it leaves to you: creating the owner record at signup, handling refunds (clear `feature:<id>:<name>`; the altar keeps what it already has), and strict write ordering (KV can race; use a Durable Object or D1 if that matters).
 
 ## Tests
 

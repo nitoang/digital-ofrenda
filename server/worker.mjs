@@ -6,7 +6,8 @@
 //               ofrenda:<id>  the saved altar (JSON)
 //               owner:<id>    SHA-256 hex of that altar's edit token. YOU create this when someone starts an
 //                             altar (signup flow). No owner record = nobody can write (fail closed).
-//               paid:<id>     "1" once the extra-photos upgrade is bought. Only the Stripe webhook sets it.
+//               feature:<id>:<name>  "1" once that upgrade is bought; <name> is extraPhotos or sevenTiers.
+//                             Only the Stripe webhook sets it, from the session's metadata.feature.
 //   STRIPE_WEBHOOK_SECRET  secret from the Stripe dashboard (whsec_...)
 //   ALLOW_ORIGIN           optional, e.g. "https://example.com"; CORS is off unless set
 //
@@ -18,7 +19,7 @@
 // KV is eventually consistent and has no transactions, so two simultaneous saves can race; for strict
 // guarantees use a Durable Object or D1 and do the read-validate-write inside one transaction.
 
-import { validateOfrenda, countPhotos } from './validate.mjs';
+import { validateOfrenda, FEATURES } from './validate.mjs';
 
 export const MAX_BODY_BYTES = 2_500_000;
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -73,9 +74,13 @@ async function handleSave(request, env, id) {
   try { input = JSON.parse(body); } catch { return json({ error: 'bad_json' }, 400); }
 
   // Paid status and the existing photo count come from OUR storage, never from the request.
-  const [paid, previous] = await Promise.all([env.OFRENDAS.get('paid:' + id), env.OFRENDAS.get('ofrenda:' + id, 'json')]);
-  const r = validateOfrenda(input, { paid: paid === '1', previousPhotoCount: countPhotos(previous) });
-  if (!r.ok) return json({ error: r.code, message: r.message, ...(r.status === 402 ? { upgrade: 'extraPhotos' } : {}) }, r.status);
+  const [flags, previous] = await Promise.all([
+    Promise.all(FEATURES.map(f => env.OFRENDAS.get(`feature:${id}:${f}`))),
+    env.OFRENDAS.get('ofrenda:' + id, 'json'),
+  ]);
+  const entitlements = Object.fromEntries(FEATURES.map((f, i) => [f, flags[i] === '1']));
+  const r = validateOfrenda(input, { entitlements, previous });
+  if (!r.ok) return json({ error: r.code, message: r.message, ...(r.feature ? { upgrade: r.feature } : {}) }, r.status);
 
   await env.OFRENDAS.put('ofrenda:' + id, JSON.stringify(r.state));
   return json({ ok: true });
@@ -99,8 +104,10 @@ async function handleStripe(request, env) {
   let event;
   try { event = JSON.parse(raw); } catch { return json({ error: 'bad_json' }, 400); }
   const s = event?.data?.object;
-  if (event?.type === 'checkout.session.completed' && s?.payment_status === 'paid' && ID_RE.test(s.client_reference_id || '')) {
-    await env.OFRENDAS.put('paid:' + s.client_reference_id, '1'); // idempotent: Stripe may deliver twice
+  // metadata.feature is set by YOUR server when it creates the Checkout session (or on the Payment Link).
+  // An unknown or missing feature unlocks nothing.
+  if (event?.type === 'checkout.session.completed' && s?.payment_status === 'paid' && ID_RE.test(s.client_reference_id || '') && FEATURES.includes(s.metadata?.feature)) {
+    await env.OFRENDAS.put(`feature:${s.client_reference_id}:${s.metadata.feature}`, '1'); // idempotent: Stripe may deliver twice
   }
   return json({ received: true });
 }
