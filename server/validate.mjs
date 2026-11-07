@@ -2,13 +2,14 @@
 // Node 18+, Deno and Bun. The browser enforces the free limits for honesty, but anyone can call your
 // storage endpoint directly, so THIS is what actually enforces them.
 //
-//   const r = validateOfrenda(body, { paid, previousPhotoCount });
+//   const r = validateOfrenda(body, { entitlements: { extraPhotos, sevenTiers }, previous });
 //   if (!r.ok) -> respond r.status with r.code / r.message
 //   else       -> store r.state (already cleaned; never store the raw body)
 //
 // It applies the same allowlist as `sanitize` in ofrenda.js (tests/server.test.js checks the two agree).
 
 export const FREE_PHOTOS = 2;
+export const FEATURES = Object.freeze(['extraPhotos', 'sevenTiers']); // the paid upgrades; same names as the component's features
 
 export const LIMITS = Object.freeze({
   maxItems: 200,
@@ -31,7 +32,7 @@ const IMAGE_RE = /^data:image\/(jpeg|png|webp|gif);base64,([A-Za-z0-9+/]+={0,2})
 
 const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
 const num = (v, lo, hi, d) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d);
-const fail = (status, code, message) => ({ ok: false, status, code, message });
+const fail = (status, code, message, feature) => ({ ok: false, status, code, message, ...(feature ? { feature } : {}) });
 
 // Check the decoded first 12 bytes really match the claimed image type, so a mislabeled file is refused.
 function looksLikeImage(type, b64) {
@@ -57,13 +58,13 @@ function cleanImage(v, max) {
 
 /**
  * @param {unknown} input  parsed JSON from the request (untrusted)
- * @param {{ paid?: boolean, previousPhotoCount?: number, limits?: Partial<typeof LIMITS> }} [opts]
- *   paid                True when this altar has bought the extra-photos upgrade (from YOUR payment records,
- *                       never from the request).
- *   previousPhotoCount  Photos in the altar currently stored. Mirrors the browser rule that existing photos
- *                       are never deleted: a lapsed or free altar may keep what it has, but not grow past it
- *                       beyond FREE_PHOTOS.
- * @returns {{ok:true,state:object,photos:number}|{ok:false,status:number,code:string,message:string}}
+ * @param {{ entitlements?: {extraPhotos?: boolean, sevenTiers?: boolean}, previous?: object|null, limits?: Partial<typeof LIMITS> }} [opts]
+ *   entitlements  Which upgrades this altar has bought, from YOUR payment records, never from the request.
+ *                 Only boolean `true` counts.
+ *   previous      The altar currently stored (or null). Mirrors the browser rule that saved data is never
+ *                 deleted: an altar whose upgrade lapsed may keep and re-save the photos it has and a 7-tier
+ *                 setting it already has, but cannot add photos past the free limit or switch to 7 tiers.
+ * @returns {{ok:true,state:object,photos:number}|{ok:false,status:number,code:string,message:string,feature?:string}}
  */
 export function validateOfrenda(input, opts = {}) {
   const limits = { ...LIMITS, ...opts.limits };
@@ -96,14 +97,19 @@ export function validateOfrenda(input, opts = {}) {
     items.push(item);
   }
 
-  const allowed = opts.paid === true ? Infinity : Math.max(FREE_PHOTOS, Math.floor(opts.previousPhotoCount) || 0);
+  const has = f => opts.entitlements?.[f] === true;
+  const allowed = has('extraPhotos') ? Infinity : Math.max(FREE_PHOTOS, countPhotos(opts.previous));
   if (photos > allowed) {
-    return fail(402, 'photo_limit', `Free altars hold ${FREE_PHOTOS} photos. Adding more is an upgrade.`);
+    return fail(402, 'photo_limit', `Free altars hold ${FREE_PHOTOS} photos. Adding more is an upgrade.`, 'extraPhotos');
+  }
+  const tiers = input.tiers === 7 ? 7 : 3;
+  if (tiers === 7 && !has('sevenTiers') && opts.previous?.tiers !== 7) {
+    return fail(402, 'tiers_locked', 'The seven-tier altar is an upgrade.', 'sevenTiers');
   }
 
   const state = {
     kind: KINDS.includes(input.kind) ? input.kind : 'person',
-    tiers: input.tiers === 7 ? 7 : 3,
+    tiers,
     name: str(input.name, 80),
     dates: str(input.dates, 80),
     items,
