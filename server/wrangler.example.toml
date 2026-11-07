@@ -1,0 +1,11 @@
+name = "digital-ofrenda-api"
+main = "worker.mjs"
+compatibility_date = "2025-01-01"
+
+[[kv_namespaces]]
+binding = "OFRENDAS"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+# Secrets (never commit them):  npx wrangler secret put STRIPE_WEBHOOK_SECRET
+# [vars]
+# ALLOW_ORIGIN = "https://your-site.example"
