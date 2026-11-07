@@ -56,6 +56,25 @@ DigitalOfrenda.features = { sevenTiers: true, extraPhotos: true };
 
 Replacing a photo that is already on the altar is always allowed, and an altar that already has more than 2 photos (an import, or the feature was on earlier) keeps them all. The limit only blocks adding another.
 
+## Enforcing the limits on your server
+
+The 2-photo limit in the browser is a courtesy, not protection: anyone can call your storage endpoint directly. If you use shared storage, run the same checks on whatever receives `storage.save()`. `server/validate.mjs` is a dependency-free module (Cloudflare Workers, Node 18+, Deno, Bun) that does it:
+
+```js
+import { validateOfrenda, countPhotos } from './server/validate.mjs';
+
+const r = validateOfrenda(body, { paid, previousPhotoCount: countPhotos(stored) });
+if (!r.ok) return reply(r.status, { error: r.code });   // 402 photo_limit, 422 bad_image, 413 too_large, 400 bad_format
+await save(r.state);                                      // store the cleaned state, never the raw body
+```
+
+- `paid` must come from your own payment records, never from the request. Only boolean `true` counts.
+- It applies the same allowlist as the component (item types, clamped numbers and text), accepts only inline PNG/JPEG/WebP/GIF whose first bytes match the declared type, caps each photo (about 300 KB) and the whole altar (2 MB), and returns a cleaned copy.
+- `previousPhotoCount` mirrors the browser rule that existing photos are never deleted: an altar whose upgrade lapsed can keep and re-save what it has, but not add more.
+- It does not check who may write. That is your server's job.
+
+`server/worker.mjs` is a complete example for Cloudflare Workers + KV (config in `server/wrangler.example.toml`): `GET/PUT /ofrendas/:id`, a per-altar edit token (stored as a SHA-256 hash; no owner record means no writes), a request body cap that is enforced while streaming, and a Stripe webhook (`checkout.session.completed`, signature and timestamp verified) that sets the paid flag from `client_reference_id`. Wire it to the component by pointing `DigitalOfrenda.storage.save` at the PUT route. Things it leaves to you: creating the owner record at signup, handling refunds (clear `paid:<id>`), and strict write ordering (KV can race; use a Durable Object or D1 if that matters). The seven-tier option is not enforced there; `validateOfrenda` currently passes `tiers: 7` through.
+
 ## Tests
 
 Browser tests (Playwright + Node's built-in test runner) load the pages straight from disk:
@@ -66,7 +85,7 @@ npx playwright install chromium   # first time only
 npm test
 ```
 
-They cover the default altar, Person / Pet / Mixed, 3 vs 7 tiers and the upgrade event, Start over, multiple photos, old single-photo saves, export/import (with the two-click confirm), and sanitizing of hostile imports. They fail on any page error or browser dialog.
+`tests/server.test.js` checks the server module and Worker without a browser. The browser tests cover the default altar, Person / Pet / Mixed, 3 vs 7 tiers and the upgrade event, Start over, multiple photos, old single-photo saves, export/import (with the two-click confirm), and sanitizing of hostile imports. They fail on any page error or browser dialog.
 
 ## Security
 
