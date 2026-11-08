@@ -14,8 +14,8 @@ binding = "MAILER"
 service = "digital-ofrenda-mailer"
 
 [vars]
+# Serve your page and this Worker from this same origin: sign-in is a cookie and there is no CORS.
 APP_URL = "https://REPLACE-WITH-YOUR-SITE"
-# ALLOW_ORIGIN = "https://your-site.example"   # only if the page is on a different origin than this Worker
 # TURNSTILE_DISABLED = "1"                      # local development ONLY; never in production
 
 # Secrets (never commit them):
@@ -23,4 +23,4 @@ APP_URL = "https://REPLACE-WITH-YOUR-SITE"
 #   npx wrangler secret put STRIPE_WEBHOOK_SECRET
 #
 # Also add Cloudflare rate-limiting rules (dashboard: Security > WAF > Rate limiting rules) for
-# POST /ofrendas and POST /recover.
+# POST /auth/start, /auth/code and /auth/redeem.

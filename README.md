@@ -73,24 +73,34 @@ await save(r.state);                                      // store the cleaned s
 - `previous` (the altar currently stored) mirrors the browser rule that saved data is never taken away: an altar whose upgrade lapsed can keep and re-save the photos it has and a 7-tier setting it already has, but cannot add photos past 2 or switch to 7 tiers. Switching back to 3 tiers is always allowed. A refused upgrade returns 402 with `feature` set to `extraPhotos` or `sevenTiers`, the same names as `upgrade-request`.
 - It does not check who may write. That is your server's job.
 
-### Signup, email recovery and the example Worker
+### Accounts, co-keepers and the example Worker
 
-`server/worker.mjs` is a complete example for Cloudflare Workers + D1 (config in `server/wrangler.example.toml`, schema in `server/migrations/`). There are no accounts and no passwords. Each altar has a secret **edit token**, and every altar has an **email address for recovery**.
+`server/worker.mjs` is a complete example for Cloudflare Workers + D1 (config in `server/wrangler.example.toml`, schema in `server/migrations/`). Altars are meant to last years and be shared by families, so people sign in by email: **no passwords**.
 
-1. **Signup:** `POST /ofrendas` with `{email, turnstile}` creates the altar and returns `{id, token}` once. Only the token's SHA-256 hash is stored. The page keeps the token in the browser and shows an edit link (`/a/<id>#k=<token>`) and a view link (`/a/<id>`) to share.
-2. **Confirmation:** the owner gets an email with a one-time link (`/a/<id>#v=...`, valid 24 hours). `POST /ofrendas/:id/verify` confirms the address. Until it is confirmed, recovery does nothing for that altar, so a mistyped address can never be used to take over an altar.
-3. **Recovery:** `POST /recover` with `{email, turnstile}` always answers `200 {"ok":true}`, whether or not the address is known. If it belongs to confirmed altars, one email lists a link for each (`/a/<id>#r=...`, valid 30 minutes, up to 10). `POST /ofrendas/:id/recover` swaps the link for a **new edit token** and the old token stops working. Emailed tokens sit after the `#`, and the page POSTs them, so email scanners that pre-fetch links cannot use them up.
-4. **Rotate:** `POST /ofrendas/:id/rotate` (with the current token) issues a new edit token, for example after a link leaks. Recovery and rotation both cancel recovery links still waiting in inboxes.
-5. **Saving:** `PUT /ofrendas/:id` needs the bearer token and applies `validateOfrenda`, with entitlements read from the `features` table. A request cannot grant itself an upgrade. `GET /ofrendas/:id` is public and returns only the altar, never the email or any credential.
-6. **Payments:** a signature-checked Stripe webhook (`checkout.session.completed`) inserts a `features` row using `client_reference_id` as the altar ID and `metadata.feature` (`extraPhotos` or `sevenTiers`) as the name. A missing or unknown feature unlocks nothing.
+**Signing in.** Enter an email and get a link and a 6-digit code (two ways to use one single-use challenge, valid 15 minutes). There is no separate sign-up: an account is created only when the address is proven. The reply never says whether an address is known. A session is a random value in a `__Host-` cookie (Secure, HttpOnly, SameSite=Lax), stored hashed, and lasts 90 days from last use because people come back after months. Wrong codes are limited to 5 per challenge, and emails to 5 per address per hour. Because it uses a cookie, every request that changes data must come from your own origin (checked against `APP_URL`); there is deliberately no CORS, so serve the page and the Worker from one origin.
+
+**Altars and people.** An account owns up to 3 altars for free (`RULES.freeAltars`); the **platinum** plan lifts that and unlocks unlimited photos and the seven-tier option on all of the owner's altars. Other upgrades are bought per altar. Anyone with the link can view an altar. Editing needs an account on it:
+- **Owner:** one per altar. Saves, deletes, invites co-keepers, names a successor.
+- **Co-keepers:** invited by email (up to 10, invitations last 7 days and only work for the invited address). They can edit and can leave, but cannot delete the altar or manage people. They see who else keeps it.
+- Altars use the owner's entitlements, so a co-keeper never needs a plan of their own.
+
+**A successor.** The owner can name one person per altar to take over if they can no longer look after it. Naming someone grants nothing: they must sign in and agree first. A takeover then needs all of this:
+1. The owner has not been seen for 180 days (`RULES.inactiveAfter`).
+2. The successor asks. The owner is emailed and has 30 days (`RULES.claimWait`) to stop it; **signing in at any time cancels it**, and the successor is told.
+3. After the wait the successor completes it. They become owner and the previous owner stays on as a co-keeper. Upgrades the old owner's platinum plan was providing are copied onto the altar so the family keeps them.
+
+Nothing here needs a scheduled job; each step is a request someone makes.
+
+**Payments.** The Stripe webhook (`checkout.session.completed`, signature and timestamp verified) unlocks what was bought. Your server sets two fields when it creates the Checkout session: `client_reference_id` and `metadata.feature`. For `extraPhotos` or `sevenTiers`, the reference is the **altar** id. For `platinum`, it is the **user** id (the signed-in page gets it from `GET /me`). A missing or unknown feature unlocks nothing, and refunds never delete what an altar already has.
 
 Setup you do once:
 - `npx wrangler d1 create digital-ofrenda`, put the ID in the config, then `npx wrangler d1 migrations apply digital-ofrenda`.
-- **Email:** write a tiny Worker for the email provider you choose that accepts `POST /send` with `{to, subject, text}`, and bind it as `MAILER`. The templates are in `server/mail.mjs`. Links use `APP_URL`, never the request's Host header.
-- **Turnstile:** create a widget and `wrangler secret put TURNSTILE_SECRET`. Signup and recovery refuse requests without a valid token. `TURNSTILE_DISABLED=1` exists for local development only, and the Worker returns 500 if neither is set.
-- **Rate limits:** add Cloudflare rate-limiting rules on `POST /ofrendas` and `POST /recover`. The Worker also limits per email address: 3 confirmation emails and 20 recovery links per hour, so one inbox cannot be flooded. A fourth altar registered to the same address within an hour gets its confirmation email once the hour has passed (use the resend route).
+- **Email:** write a tiny Worker for the provider you choose that accepts `POST /send` with `{to, subject, text}`, and bind it as `MAILER`. Templates are in `server/mail.mjs`. Links use `APP_URL`, never the Host header.
+- **Turnstile:** create a widget and `wrangler secret put TURNSTILE_SECRET`. Sign-in refuses requests without a valid token. `TURNSTILE_DISABLED=1` is for local development only, and the Worker returns 500 if neither is set.
+- **Rate limits:** add Cloudflare rate-limiting rules on `POST /auth/start`, `/auth/code` and `/auth/redeem`.
+- Tune the numbers in `server/rules.mjs`.
 
-Things it leaves to you: creating the Stripe Checkout session (with `client_reference_id` and `metadata.feature`), clearing a `features` row on refund (the altar keeps what it already has), changing an altar's email address, deleting an altar and its email on request, and custom names. Email addresses are stored in plain text because they have to be emailed, so publish a privacy policy.
+Not built: the pages and the component's storage adapter that call these routes, Stripe Checkout creation, changing an account's email address, deleting an account, and custom names. Email addresses are stored in plain text because they have to be emailed, so publish a privacy policy.
 
 ## Tests
 
@@ -102,7 +112,7 @@ npx playwright install chromium   # first time only
 npm test
 ```
 
-`tests/server.test.js` (the validator) and `tests/worker.test.js` (signup, confirmation, recovery, saving and the Stripe webhook, running the real SQL on SQLite) need no browser; the Worker tests use `node:sqlite`, so Node 22 or newer. The browser tests cover the default altar, Person / Pet / Mixed, 3 vs 7 tiers and the upgrade event, Start over, multiple photos, old single-photo saves, export/import (with the two-click confirm), and sanitizing of hostile imports. They fail on any page error or browser dialog.
+`tests/server.test.js` (the validator) and `tests/worker.test.js` (sign-in, sessions, altars, co-keepers, successor takeover and the Stripe webhook, running the real SQL on SQLite) need no browser; the Worker tests use `node:sqlite`, so Node 22 or newer. The browser tests cover the default altar, Person / Pet / Mixed, 3 vs 7 tiers and the upgrade event, Start over, multiple photos, old single-photo saves, export/import (with the two-click confirm), and sanitizing of hostile imports. They fail on any page error or browser dialog.
 
 ## Security
 
