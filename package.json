@@ -4,7 +4,9 @@
   "description": "A drag-and-drop remembrance altar as a web component.",
   "private": true,
   "scripts": {
-    "test": "node --test --test-concurrency=1 tests/*.test.js"
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "build:site": "node scripts/build-site.mjs",
+    "dev": "node scripts/dev.js"
   },
   "devDependencies": {
     "playwright": "^1.50.0"
