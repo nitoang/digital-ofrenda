@@ -4,13 +4,14 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { d1 } = require('./d1');
 
 const ROOT = path.resolve(__dirname, '..');
 const SITE = path.join(ROOT, 'site');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 
-const isApi = p => p === '/me' || p === '/ofrendas' || /^\/(auth|ofrendas|invites|successor|stripe)\//.test(p);
+const isApi = p => p === '/me' || p === '/checkout' || p === '/ofrendas' || /^\/(auth|ofrendas|invites|successor|stripe)\//.test(p);
 
 // Cloudflare Pages _headers: indented "Name: value" lines under a path line. Only "/*" is used here.
 function readHeaders() {
@@ -46,14 +47,24 @@ function resolveFile(pathname, rewrites) {
   return p === '/ofrenda.js' ? component : null;
 }
 
-async function startSite({ env: envOver = {}, port = 0, onMail } = {}) {
+const STRIPE_ENV = { STRIPE_SECRET_KEY: 'sk_test_x', STRIPE_PRICE_EXTRA_PHOTOS: 'price_photos', STRIPE_PRICE_SEVEN_TIERS: 'price_tiers', STRIPE_PRICE_PLATINUM: 'price_platinum' };
+
+// stripe: true makes purchases available, answered by a stand-in for Stripe that records what it was asked.
+async function startSite({ env: envOver = {}, port = 0, onMail, stripe = false } = {}) {
   const w = await import('../server/worker.mjs');
   const store = await import('../server/store.mjs');
   const { RULES } = await import('../server/rules.mjs');
   const sent = [];
   let offset = 0;
-  const env = { DB: d1(), APP_URL: 'http://localhost', TURNSTILE_DISABLED: '1', STRIPE_WEBHOOK_SECRET: 'whsec_test', ...envOver };
-  const handler = w.createHandler({ now: () => Date.now() + offset, mailer: { send: async m => { sent.push(m); onMail?.(m); } }, defer: p => void p.catch(() => {}) });
+  const env = { DB: d1(), APP_URL: 'http://localhost', TURNSTILE_DISABLED: '1', STRIPE_WEBHOOK_SECRET: 'whsec_test', ...(stripe ? STRIPE_ENV : {}), ...envOver };
+  const stripeCalls = [];
+  const fakeFetch = async (url, init) => {
+    if (!String(url).startsWith('https://api.stripe.com/')) return fetch(url, init);
+    stripeCalls.push(Object.fromEntries(init.body));
+    const n = stripeCalls.length;
+    return new Response(JSON.stringify({ id: 'cs_test_' + n, url: 'https://checkout.stripe.com/c/pay/cs_test_' + n }));
+  };
+  const handler = w.createHandler({ fetch: fakeFetch, now: () => Date.now() + offset, mailer: { send: async m => { sent.push(m); onMail?.(m); } }, defer: p => void p.catch(() => {}) });
   const headers = readHeaders();
   const rewrites = readRewrites();
   let origin = '';
@@ -96,8 +107,16 @@ async function startSite({ env: envOver = {}, port = 0, onMail } = {}) {
   };
 
   return {
-    url: origin, env, sent, store, RULES, db: env.DB.raw, headers,
+    url: origin, env, sent, store, RULES, db: env.DB.raw, headers, stripeCalls,
     tick: ms => { offset += ms; },
+    // Stripe telling the webhook that the person paid for the checkout session described by `form`.
+    async pay(form, type = 'checkout.session.completed') {
+      const body = JSON.stringify({ type, data: { object: { payment_status: 'paid', client_reference_id: form.client_reference_id, metadata: { feature: form['metadata[feature]'] } } } });
+      const t = Math.floor((Date.now() + offset) / 1000);
+      const mac = crypto.createHmac('sha256', 'whsec_test').update(`${t}.${body}`).digest('hex');
+      const r = await fetch(origin + '/stripe/webhook', { method: 'POST', headers: { 'stripe-signature': `t=${t},v1=${mac}` }, body });
+      if (!r.ok) throw new Error('webhook refused: ' + r.status);
+    },
     // The 6-digit code in the newest mail to `email` after index `from`.
     codeFor: (email, from = 0) => until(() => {
       const m = sent.slice(from).reverse().find(x => x.to === email.toLowerCase() && /\d{6}/.test(x.subject));

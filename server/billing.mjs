@@ -1,13 +1,16 @@
 // Stripe webhook: unlocks what was bought. Two kinds of purchase:
 //   metadata.feature = "extraPhotos" | "sevenTiers"  client_reference_id = the ALTAR id   (per altar)
 //   metadata.feature = "platinum"                     client_reference_id = the USER id    (whole account)
-// Your server sets both when it creates the Checkout session. Anything unknown or missing unlocks nothing.
+// checkout.mjs sets both when it creates the Checkout session. Anything unknown or missing unlocks nothing.
+// A card payment arrives as checkout.session.completed with payment_status "paid". A delayed payment method
+// arrives as completed/"unpaid" (ignored) and later as checkout.session.async_payment_succeeded (accepted).
 
 import { json, readBody, timingSafeEqual } from './util.mjs';
 import { FEATURES } from './validate.mjs';
 import * as store from './store.mjs';
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const PAID_EVENTS = ['checkout.session.completed', 'checkout.session.async_payment_succeeded'];
 const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 
 // Stripe signs "<timestamp>.<raw body>" with HMAC-SHA256; the header looks like "t=...,v1=...,v1=...".
@@ -29,7 +32,7 @@ export async function handleStripe(request, env, deps) {
   try { event = JSON.parse(raw); } catch { return json({ error: 'bad_json' }, 400); }
   const s = event?.data?.object;
   const feature = s?.metadata?.feature;
-  if (event?.type === 'checkout.session.completed' && s?.payment_status === 'paid' && ID_RE.test(s.client_reference_id || '')) {
+  if (PAID_EVENTS.includes(event?.type) && s?.payment_status === 'paid' && ID_RE.test(s.client_reference_id || '')) {
     let ok = true; // idempotent: Stripe may deliver twice
     if (feature === 'platinum') ok = await store.setPlan(env.DB, s.client_reference_id, 'platinum');
     else if (FEATURES.includes(feature)) ok = await store.grantFeature(env.DB, s.client_reference_id, feature, deps.now());

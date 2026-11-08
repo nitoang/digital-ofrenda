@@ -9,6 +9,8 @@
 //   TURNSTILE_SECRET        Cloudflare Turnstile secret; sign-in refuses requests without a valid token.
 //                           Set TURNSTILE_DISABLED="1" instead ONLY for local development.
 //   STRIPE_WEBHOOK_SECRET   whsec_... from Stripe
+//   STRIPE_SECRET_KEY       sk_... from Stripe; STRIPE_PRICE_EXTRA_PHOTOS, STRIPE_PRICE_SEVEN_TIERS and
+//                           STRIPE_PRICE_PLATINUM are the ids (price_...) of one-time Prices you create in Stripe
 //
 // Routes (JSON; everything except GET and the webhook must come from the APP_URL origin):
 //   POST /auth/start {email, turnstile} -> {challenge}     emails a link and a 6-digit code
@@ -26,10 +28,11 @@
 //   PUT /ofrendas/:id/successor {email} | DELETE /ofrendas/:id/successor
 //   POST /successor/accept {token}
 //   POST /ofrendas/:id/claim | DELETE /ofrendas/:id/claim | POST /ofrendas/:id/claim/complete
-//   POST /stripe/webhook                                   unlocks upgrades (see billing.mjs)
+//   POST /checkout {feature, altarId?}                     -> {url}  start a purchase (see checkout.mjs)
+//   POST /stripe/webhook                                   unlocks upgrades after payment (see billing.mjs)
 //
 // Rate limiting by IP belongs at the edge: add Cloudflare rate-limiting rules for POST /auth/start,
-// /auth/code and /auth/redeem. What is limited here is per email address and per code.
+// /auth/code, /auth/redeem and /checkout. What is limited here is per email address and per code.
 
 import { json } from './util.mjs';
 import { mailerFromEnv } from './mail.mjs';
@@ -37,6 +40,7 @@ import * as auth from './auth.mjs';
 import * as altars from './altars.mjs';
 import * as team from './team.mjs';
 import { handleStripe } from './billing.mjs';
+import { handleCheckout } from './checkout.mjs';
 
 export { MAX_BODY_BYTES } from './altars.mjs';
 export { verifyStripe } from './billing.mjs';
@@ -50,6 +54,7 @@ const ROUTES = [
   ['POST', /^\/auth\/logout$/, auth.handleLogout],
   ['POST', /^\/auth\/logout-all$/, auth.handleLogoutEverywhere],
   ['GET', /^\/me$/, altars.handleMe],
+  ['POST', /^\/checkout$/, handleCheckout],
   ['POST', /^\/ofrendas$/, altars.handleCreate],
   ['PUT', new RegExp(`^/ofrendas/${ID}$`), altars.handleSave],
   ['DELETE', new RegExp(`^/ofrendas/${ID}$`), altars.handleDelete],

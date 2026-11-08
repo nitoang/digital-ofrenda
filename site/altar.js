@@ -2,6 +2,7 @@ import { api, getMe, describe } from './api.js';
 import { h, mount, frame, messages, link } from './ui.js';
 import { makeStorage } from './storage.js';
 import { showUpgrade } from './upgrade.js';
+import { purchaseReturn, waitUntil, WAITING, SLOW, CANCELLED } from './purchase.js';
 
 const root = document.getElementById('app');
 const id = (/^\/a\/([A-Za-z0-9_-]{1,64})\/?$/.exec(location.pathname) || [])[1];
@@ -19,6 +20,7 @@ function shareBox(url) {
 
 (async () => {
   if (!id) { mount(root, frame(null, h('h1', {}, 'Ofrenda not found'), h('p', {}, link('Go to the home page', '/')))); return; }
+  const back = purchaseReturn();
   let me;
   try { me = await getMe(); } catch (e) { mount(root, frame(null, h('p', { class: 'msg error', role: 'alert' }, describe(e)))); return; }
 
@@ -43,10 +45,10 @@ function shareBox(url) {
   Ofrenda.features = { sevenTiers: entitlements.sevenTiers === true, extraPhotos: entitlements.extraPhotos === true };
   Ofrenda.storage = makeStorage({
     canWrite: !!membership,
-    onUpgrade: showUpgrade,
+    onUpgrade: feature => showUpgrade(feature, { altarId: id, role: membership && membership.role }),
     onSignedOut: () => msg.fail('You have been signed out, so your latest changes were not saved. Sign in again in a new tab, then reload this page.'),
   });
-  document.addEventListener('upgrade-request', e => showUpgrade(e.detail && e.detail.feature));
+  document.addEventListener('upgrade-request', e => showUpgrade(e.detail && e.detail.feature, { altarId: id, role: membership && membership.role }));
 
   const el = document.createElement('digital-ofrenda');
   el.id = id;
@@ -58,4 +60,14 @@ function shareBox(url) {
   const [header, main] = frame(me, tools, msg.el, el);
   main.classList.add('wide');
   mount(root, header, main);
+
+  if (back && back.kind === 'cancelled') msg.say(CANCELLED);
+  if (back && back.kind === 'success') {
+    // The payment may reach the server a moment after the browser gets back; wait for it, then reload so the
+    // editor starts with the upgrade switched on.
+    if (entitlements[back.feature]) { msg.say('Your upgrade is ready.'); return; }
+    msg.say(WAITING);
+    const ok = await waitUntil(async () => (await api('GET', `/ofrendas/${id}/team`)).entitlements?.[back.feature] === true);
+    if (ok) location.replace(location.pathname); else msg.fail(SLOW);
+  }
 })();
