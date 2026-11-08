@@ -91,7 +91,16 @@ await save(r.state);                                      // store the cleaned s
 
 Nothing here needs a scheduled job; each step is a request someone makes.
 
-**Payments.** The Stripe webhook (`checkout.session.completed`, signature and timestamp verified) unlocks what was bought. Your server sets two fields when it creates the Checkout session: `client_reference_id` and `metadata.feature`. For `extraPhotos` or `sevenTiers`, the reference is the **altar** id. For `platinum`, it is the **user** id (the signed-in page gets it from `GET /me`). A missing or unknown feature unlocks nothing, and refunds never delete what an altar already has.
+**Payments.** Purchases are one-time and use Stripe Checkout, so card details never touch this code.
+- `POST /checkout {feature, altarId?}` (signed in) asks Stripe for a Checkout page and returns its address. The page never chooses a price, a reference or any metadata: the Worker reads the Price ids from its settings and sets them itself. `extraPhotos` and `sevenTiers` are bought for one altar, by its **owner** (`client_reference_id` is the altar id); `platinum` is bought for the signed-in account (`client_reference_id` is the user id). Buying something you already have is refused, so nobody pays twice by accident, and the browser will only ever follow an address on `checkout.stripe.com`.
+- The Stripe webhook (`checkout.session.completed` with `payment_status` "paid", or `checkout.session.async_payment_succeeded` for delayed payment methods; signature and timestamp verified) unlocks what was bought, keyed by the `client_reference_id` and `metadata.feature` the Worker set. A missing or unknown feature unlocks nothing, and refunds never delete what an altar already has.
+- Coming back from Stripe, the page may arrive a moment before the webhook does, so it waits (up to about 30 seconds) for the upgrade to appear, then reloads with it switched on.
+
+Set up Stripe once (use test mode first):
+1. In the dashboard create three **one-time** Prices (extra photos, seven tiers, Platinum). Put their ids in `STRIPE_PRICE_EXTRA_PHOTOS`, `STRIPE_PRICE_SEVEN_TIERS` and `STRIPE_PRICE_PLATINUM` (see `server/wrangler.example.toml`), and your secret key in `wrangler secret put STRIPE_SECRET_KEY`. Until these are set, the buy buttons say purchases are not open yet.
+2. Add a webhook endpoint at `https://<your site>/stripe/webhook` for the events `checkout.session.completed` and `checkout.session.async_payment_succeeded`, and store its signing secret as `STRIPE_WEBHOOK_SECRET`.
+3. Try it end to end with the Stripe CLI (`stripe listen --forward-to <your site>/stripe/webhook`) and a test card before going live.
+4. Tax, currency and receipts are Stripe settings; this code does not turn on automatic tax. Add a Cloudflare rate-limiting rule for `POST /checkout`.
 
 Setup you do once:
 - `npx wrangler d1 create digital-ofrenda`, put the ID in the config, then `npx wrangler d1 migrations apply digital-ofrenda`.
@@ -100,7 +109,7 @@ Setup you do once:
 - **Rate limits:** add Cloudflare rate-limiting rules on `POST /auth/start`, `/auth/code` and `/auth/redeem`.
 - Tune the numbers in `server/rules.mjs`.
 
-Not built: the pages and the component's storage adapter that call these routes, Stripe Checkout creation, changing an account's email address, deleting an account, and custom names. Email addresses are stored in plain text because they have to be emailed, so publish a privacy policy.
+Not built: refunds (clearing an upgrade is a manual step), changing an account's email address, deleting an account, and custom names. Email addresses are stored in plain text because they have to be emailed, so publish a privacy policy.
 
 ### The website (`site/`)
 
@@ -119,7 +128,7 @@ How it behaves:
 - It plugs the Worker into the component through the shared-storage hook (`site/storage.js`), and turns the editor's options on from what the server says the altar is entitled to. The server still enforces every limit, so the page is a convenience, not protection.
 - Everything is built with `textContent`, so names and emails can never turn into markup. The pages run under a strict policy (`site/_headers`): only this site's scripts and styles, plus Turnstile. The tests apply that exact file, so a page that needs anything looser fails them.
 - Emailed tokens are kept out of URLs: they arrive after the `#`, are removed from the address bar at once, and wait in session storage only while the person signs in.
-- The "upgrade" dialog explains an option and says purchases are not open yet. Add the purchase button there (`site/upgrade.js`) once your Stripe Checkout route exists.
+- The upgrade dialog explains an option and starts the purchase. A co-keeper sees "ask the owner" instead of a buy button, since only owners can buy for an altar. Platinum is offered alongside the per-altar upgrade.
 
 **Deploying (Cloudflare Pages + Worker, one hostname).** Build command `npm run build:site`, output directory `site`. Then give the Worker these paths on the same hostname, so the page and the API share one origin: `/auth/*`, `/me`, `/ofrendas`, `/ofrendas/*`, `/invites/*`, `/successor/*`, `/stripe/*`. Pages serves everything else (note `/successor` with nothing after it is a page). Set your Turnstile site key in `site/config.js`. Cloudflare's Turnstile documentation lists the exact content-security-policy entries it needs; `site/_headers` allows the usual ones, so check them against the current docs.
 

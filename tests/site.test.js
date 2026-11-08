@@ -63,6 +63,14 @@ const startOfrenda = async page => {
 };
 const serverState = id => { const r = site.db.prepare('SELECT state FROM altars WHERE id = ?').get(id); return r && r.state ? JSON.parse(r.state) : null; };
 
+const withShop = (name, fn, opts = {}) => test(name, async () => {
+  site = await startSite({ stripe: true, ...opts });
+  try { await fn(); } finally { await site.close(); }
+});
+// Stripe's own pages are not part of this test: stand in for them.
+const fakeStripePages = ctx => ctx.route('https://checkout.stripe.com/**', r => r.fulfill({ status: 200, contentType: 'text/html', body: '<h1>Pretend Stripe</h1>' }));
+const tinyPhoto = () => 'data:image/png;base64,' + PNG.toString('base64');
+
 withSite('sign in with a code, land on My ofrendas, and sign out', async () => {
   const { ctx, page } = await visitor();
   await page.goto(site.url + '/');
@@ -318,5 +326,121 @@ withSite('the ?next= address can only ever lead to a page on this site', async (
   await signIn(page, 'maria@example.com');
   assert.equal(new URL(page.url()).origin, site.url);
   assert.equal(new URL(page.url()).pathname, '/my');
+  await ctx.close();
+});
+
+withShop('buying more photos: the dialog offers it, Stripe is asked, and coming back unlocks it', async () => {
+  const { ctx, page } = await visitor();
+  await fakeStripePages(ctx);
+  await signIn(page, 'maria@example.com');
+  const id = await startOfrenda(page);
+  const el = page.locator('digital-ofrenda[mode="edit"]');
+  const png = tmpFile('a.png', PNG);
+  const photos = () => (serverState(id)?.items || []).filter(i => i.type === 'photo' && i.src).length;
+  const addPhoto = async n => {
+    const [fc] = await Promise.all([page.waitForEvent('filechooser'), el.locator('.photo-btn').click()]);
+    await fc.setFiles(png);
+    await until(() => photos() === n, `${n} photo(s) on the server`);
+  };
+  await addPhoto(1); await addPhoto(2);
+  await el.locator('.photo-btn').click();
+  const dialog = page.getByRole('dialog', { name: 'More photos' });
+  await dialog.getByRole('button', { name: 'Get Platinum' }).waitFor();
+  await dialog.getByText('You will see the price on the next page').waitFor();
+
+  await dialog.getByRole('button', { name: 'Add more photos to this ofrenda' }).click();
+  await page.waitForURL(/^https:\/\/checkout\.stripe\.com\/c\/pay\/cs_test_1$/);
+  const form = site.stripeCalls[0];
+  assert.equal(form['metadata[feature]'], 'extraPhotos');
+  assert.equal(form.client_reference_id, id);
+  assert.equal(form['line_items[0][price]'], 'price_photos');
+
+  // Paying: the webhook may even arrive after the browser is back. The page waits for it.
+  await page.goto(form.success_url);
+  await page.getByText('Applying your upgrade').waitFor();
+  await site.pay(form);
+  await until(() => page.evaluate(() => customElements.get('digital-ofrenda').features.extraPhotos), 'the upgrade to appear', 15000);
+  assert.equal(new URL(page.url()).search, '', 'the marker leaves the address bar');
+  await page.locator('digital-ofrenda[mode="edit"]').waitFor();
+  await addPhoto(3);
+  await ctx.close();
+});
+
+withShop('Platinum from My ofrendas: the fourth ofrenda offers it, and paying lifts the limit', async () => {
+  const { ctx, page } = await visitor();
+  await fakeStripePages(ctx);
+  await signIn(page, 'maria@example.com');
+  for (let i = 0; i < 3; i++) await page.evaluate(() => fetch('/ofrendas', { method: 'POST' }));
+  await page.goto(site.url + '/my');
+  await page.getByRole('button', { name: 'Start a new ofrenda' }).click();
+  await page.getByRole('dialog', { name: 'Platinum' }).getByRole('button', { name: 'Get Platinum' }).click();
+  await page.waitForURL(/^https:\/\/checkout\.stripe\.com\//);
+  const form = site.stripeCalls[0];
+  assert.equal(form['metadata[feature]'], 'platinum');
+  assert.equal(form.client_reference_id, site.db.prepare('SELECT id FROM users').get().id);
+
+  await site.pay(form);
+  await page.goto(form.success_url);
+  await page.getByText('Thank you! You now have Platinum.').waitFor();
+  await page.getByText('Platinum', { exact: true }).first().waitFor();
+  await page.getByRole('button', { name: 'Start a new ofrenda' }).click();
+  await page.waitForURL(/\/a\/[a-z2-7]{12}$/);
+  await ctx.close();
+});
+
+withShop('a co-keeper is told to ask the owner, and cancelling a payment says nothing was charged', async () => {
+  const owner = await visitor();
+  await signIn(owner.page, 'owner@example.com');
+  const id = await startOfrenda(owner.page);
+  const two = altar({ id: 'p1', type: 'photo', x: 20, y: 30, src: tinyPhoto() }, { id: 'p2', type: 'photo', x: 80, y: 30, src: tinyPhoto() });
+  assert.equal(await owner.page.evaluate(async ([id, state]) => (await fetch('/ofrendas/' + id, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(state) })).status, [id, two]), 200);
+  await owner.page.goto(`${site.url}/a/${id}/keepers`);
+  await owner.page.getByLabel('Email address', { exact: true }).fill('sam@example.com');
+  await owner.page.getByRole('button', { name: 'Send invitation' }).click();
+  await owner.page.getByText('Invitation sent.').waitFor();
+
+  const sam = await visitor();
+  await sam.page.goto(`${site.url}/invite#i=${await site.linkFrom('sam@example.com', /\/invite#i=([\w-]{43})/)}`);
+  await sam.page.waitForURL(u => u.pathname === '/signin');
+  await signIn(sam.page, 'sam@example.com');
+  await sam.page.getByRole('button', { name: 'Accept the invitation' }).click();
+  await sam.page.getByRole('link', { name: 'Open the ofrenda' }).click();
+  const el = sam.page.locator('digital-ofrenda[mode="edit"]');
+  await el.locator('.photo-btn').click();
+  const dialog = sam.page.getByRole('dialog', { name: 'More photos' });
+  await dialog.getByText('Only the owner of this ofrenda can buy upgrades').waitFor();
+  assert.equal(await dialog.getByRole('button', { name: /Get Platinum|Add more photos/ }).count(), 0, 'no way to buy');
+  assert.equal(site.stripeCalls.length, 0);
+
+  await owner.page.goto(`${site.url}/a/${id}?cancelled=1`);
+  await owner.page.getByText('No problem. Nothing was charged.').waitFor();
+  assert.equal(new URL(owner.page.url()).search, '');
+  for (const c of [owner, sam]) await c.ctx.close();
+});
+
+withSite('when purchases are not set up, the dialog says so politely', async () => {
+  const { ctx, page } = await visitor();
+  await signIn(page, 'maria@example.com');
+  for (let i = 0; i < 3; i++) await page.evaluate(() => fetch('/ofrendas', { method: 'POST' }));
+  await page.goto(site.url + '/my');
+  await page.getByRole('button', { name: 'Start a new ofrenda' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Platinum' });
+  await dialog.getByRole('button', { name: 'Get Platinum' }).click();
+  await dialog.getByRole('alert').filter({ hasText: 'Purchases are not open yet.' }).waitFor();
+  assert.equal(new URL(page.url()).pathname, '/my', 'it stays where it is');
+  await ctx.close();
+});
+
+withShop('the page itself only follows an address on Stripe, even if told otherwise', async () => {
+  const { ctx, page } = await visitor();
+  await signIn(page, 'maria@example.com');
+  for (let i = 0; i < 3; i++) await page.evaluate(() => fetch('/ofrendas', { method: 'POST' }));
+  await page.goto(site.url + '/my');
+  await page.route(site.url + '/checkout', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ url: 'https://checkout.stripe.com.evil.example/pay' }) }));
+  await page.getByRole('button', { name: 'Start a new ofrenda' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Platinum' });
+  await dialog.getByRole('button', { name: 'Get Platinum' }).click();
+  await dialog.getByRole('alert').waitFor();
+  assert.equal(new URL(page.url()).origin, site.url, 'it did not go anywhere');
   await ctx.close();
 });

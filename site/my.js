@@ -1,6 +1,7 @@
 import { api, getMe, describe } from './api.js';
 import { h, mount, frame, messages, link, date, signOut, busy } from './ui.js';
 import { showUpgrade } from './upgrade.js';
+import { purchaseReturn, waitUntil, WAITING, SLOW, CANCELLED } from './purchase.js';
 
 const root = document.getElementById('app');
 
@@ -90,4 +91,11 @@ function explain(e) {
   return describe(e);
 }
 
-render();
+(async () => {
+  const back = purchaseReturn();
+  await render(back && back.kind === 'cancelled' ? CANCELLED : back && back.kind === 'success' ? WAITING : undefined);
+  if (back && back.kind === 'success') {
+    const ok = await waitUntil(async () => (await getMe())?.plan === 'platinum');
+    await render(ok ? 'Thank you! You now have Platinum.' : SLOW);
+  }
+})();

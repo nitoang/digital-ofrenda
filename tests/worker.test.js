@@ -726,3 +726,155 @@ test('store: one-time operations succeed exactly once, however they are called',
   assert.equal(accepts.filter(Boolean).length, 1);
   assert.equal(await s.acceptSuccessor(db, { tokenHash: 'th', userId: owner.id, email: 'other@example.com', now }), null);
 });
+
+// ---------- starting a purchase ----------
+
+const STRIPE_ENV = { STRIPE_SECRET_KEY: 'sk_test_x', STRIPE_PRICE_EXTRA_PHOTOS: 'price_photos', STRIPE_PRICE_SEVEN_TIERS: 'price_tiers', STRIPE_PRICE_PLATINUM: 'price_platinum' };
+// A stand-in for Stripe's API that records what it was asked.
+const fakeStripe = ({ status = 200, body, fail } = {}) => {
+  const calls = [];
+  return {
+    calls,
+    fetch: async (url, init) => {
+      if (fail) throw new Error('offline');
+      calls.push({ url, headers: init.headers, form: Object.fromEntries(init.body) });
+      return new Response(JSON.stringify(body ?? { id: 'cs_test_1', url: 'https://checkout.stripe.com/c/pay/cs_test_1' }), { status });
+    },
+  };
+};
+const shop = async (stripe = fakeStripe(), envOver = {}) => setup({ env: { ...STRIPE_ENV, ...envOver }, deps: { fetch: stripe.fetch } });
+// What Stripe tells us after a successful payment for the session we asked it to create.
+const paid = (form, type = 'checkout.session.completed', status = 'paid') => JSON.stringify({
+  type, data: { object: { payment_status: status, client_reference_id: form.client_reference_id, metadata: { feature: form['metadata[feature]'] } } },
+});
+const deliver = (t, body) => t.call('POST', '/stripe/webhook', { body, origin: null, headers: { 'stripe-signature': t.sign(body) } });
+
+test('checkout: needs sign-in and our own origin, accepts only known features, and says so when purchases are not set up', async () => {
+  const stripe = fakeStripe();
+  const t = await shop(stripe);
+  assert.equal((await t.call('POST', '/checkout', { body: { feature: 'platinum' } })).status, 401);
+  const maria = await t.signIn('maria@example.com');
+  assert.equal((await t.call('POST', '/checkout', { body: { feature: 'platinum' }, cookie: maria.cookie, origin: 'https://evil.test' })).status, 403);
+  for (const feature of ['admin', '__proto__', 'toString', 'constructor', '', 5, null, undefined]) {
+    assert.equal((await maria.call('POST', '/checkout', { feature })).status, 400, String(feature));
+  }
+  assert.equal(stripe.calls.length, 0);
+  const noKey = await shop(fakeStripe(), { STRIPE_SECRET_KEY: undefined });
+  const m2 = await noKey.signIn('maria@example.com');
+  const r = await m2.json('POST', '/checkout', { feature: 'platinum' });
+  assert.deepEqual([r.status, r.body.error], [503, 'checkout_unavailable']);
+  const noPrice = await shop(fakeStripe(), { STRIPE_PRICE_SEVEN_TIERS: undefined });
+  const m3 = await noPrice.signIn('maria@example.com');
+  assert.equal((await m3.call('POST', '/checkout', { feature: 'sevenTiers', altarId: await noPrice.altarFor(m3) })).status, 503, 'a feature with no price is unavailable');
+  assert.equal((await m3.call('POST', '/checkout', { feature: 'platinum' })).status, 200, 'but the others still work');
+});
+
+test('checkout: an altar upgrade is for its owner, and the Stripe request is built only from our own data', async () => {
+  const stripe = fakeStripe();
+  const t = await shop(stripe);
+  const owner = await t.signIn('owner@example.com');
+  const id = await t.altarFor(owner, altar());
+  const res = await owner.json('POST', '/checkout', {
+    feature: 'extraPhotos', altarId: id, price: 'price_evil', client_reference_id: 'someone-else', amount: 1, mode: 'subscription', metadata: { feature: 'platinum' }, success_url: 'https://evil.test',
+  });
+  assert.deepEqual([res.status, res.body], [200, { url: 'https://checkout.stripe.com/c/pay/cs_test_1' }]);
+  assert.equal(stripe.calls.length, 1);
+  const [call] = stripe.calls;
+  assert.equal(call.url, 'https://api.stripe.com/v1/checkout/sessions');
+  assert.equal(call.headers.authorization, 'Bearer sk_test_x');
+  assert.deepEqual(call.form, {
+    mode: 'payment',
+    'line_items[0][price]': 'price_photos',
+    'line_items[0][quantity]': '1',
+    client_reference_id: id,
+    'metadata[feature]': 'extraPhotos',
+    'payment_intent_data[metadata][feature]': 'extraPhotos',
+    'payment_intent_data[metadata][reference]': id,
+    customer_email: 'owner@example.com',
+    success_url: `${ORIGIN}/a/${id}?upgraded=extraPhotos`,
+    cancel_url: `${ORIGIN}/a/${id}?cancelled=1`,
+  });
+
+  // A co-keeper, a stranger, and bad altar ids cannot start it.
+  await owner.call('POST', `/ofrendas/${id}/invites`, { email: 'sam@example.com' });
+  const sam = await t.signIn('sam@example.com');
+  await sam.call('POST', '/invites/accept', { token: await t.tokenFrom('sam@example.com', /#i=([\w-]{43})/) });
+  const denied = await sam.json('POST', '/checkout', { feature: 'extraPhotos', altarId: id });
+  assert.deepEqual([denied.status, denied.body.error], [403, 'owner_only']);
+  const stranger = await t.signIn('stranger@example.com');
+  assert.equal((await stranger.json('POST', '/checkout', { feature: 'sevenTiers', altarId: id })).body.error, 'forbidden');
+  for (const altarId of [undefined, '', '../x', 'a b', 5, 'zzzzzzzzzzzz']) {
+    assert.ok([400, 403].includes((await owner.call('POST', '/checkout', { feature: 'sevenTiers', altarId })).status), String(altarId));
+  }
+  assert.equal(stripe.calls.length, 1, 'none of those reached Stripe');
+});
+
+test('checkout: you cannot buy what is already yours', async () => {
+  const stripe = fakeStripe();
+  const t = await shop(stripe);
+  const owner = await t.signIn('owner@example.com');
+  const id = await t.altarFor(owner);
+  t.grant(id, 'extraPhotos');
+  const again = await owner.json('POST', '/checkout', { feature: 'extraPhotos', altarId: id });
+  assert.deepEqual([again.status, again.body.error], [409, 'already_unlocked']);
+  assert.equal((await owner.call('POST', '/checkout', { feature: 'sevenTiers', altarId: id })).status, 200, 'the other upgrade is still for sale');
+  t.db.prepare("UPDATE users SET plan = 'platinum' WHERE id = ?").run(owner.id);
+  assert.equal((await owner.call('POST', '/checkout', { feature: 'sevenTiers', altarId: id })).status, 409, 'Platinum already covers it');
+  assert.equal((await owner.call('POST', '/checkout', { feature: 'platinum' })).status, 409);
+  assert.equal(stripe.calls.length, 1);
+});
+
+test('checkout: Platinum is bought for the signed-in account, whatever else the request says', async () => {
+  const stripe = fakeStripe();
+  const t = await shop(stripe);
+  const maria = await t.signIn('maria@example.com');
+  const other = await t.signIn('other@example.com');
+  const res = await maria.call('POST', '/checkout', { feature: 'platinum', altarId: 'whatever', client_reference_id: other.id });
+  assert.equal(res.status, 200);
+  assert.equal(stripe.calls[0].form.client_reference_id, maria.id);
+  assert.equal(stripe.calls[0].form['line_items[0][price]'], 'price_platinum');
+  assert.equal(stripe.calls[0].form.success_url, `${ORIGIN}/my?upgraded=platinum`);
+  assert.equal(stripe.calls[0].form.cancel_url, `${ORIGIN}/my?cancelled=1`);
+});
+
+test('checkout: when Stripe misbehaves the person gets a plain message and nothing leaks', async () => {
+  for (const [what, stripe] of [
+    ['a Stripe error', fakeStripe({ status: 400, body: { error: { message: 'No such price: price_secret_internal' } } })],
+    ['an address that is not Stripe', fakeStripe({ body: { url: 'https://evil.test/pay' } })],
+    ['no address at all', fakeStripe({ body: { id: 'cs_1' } })],
+    ['a non-string address', fakeStripe({ body: { url: { x: 1 } } })],
+    ['an unreachable Stripe', fakeStripe({ fail: true })],
+  ]) {
+    const t = await shop(stripe);
+    const maria = await t.signIn('maria@example.com');
+    const res = await maria.call('POST', '/checkout', { feature: 'platinum' });
+    const text = await res.text();
+    assert.equal(res.status, 502, what);
+    assert.ok(!/secret|evil|price_/.test(text), what + ': nothing from Stripe leaks');
+    assert.equal(JSON.parse(text).error, 'checkout_failed');
+  }
+});
+
+test('checkout, then payment: the webhook turns the purchase into the upgrade', async () => {
+  const stripe = fakeStripe();
+  const t = await shop(stripe);
+  const owner = await t.signIn('owner@example.com');
+  const id = await t.altarFor(owner, altar());
+  const three = altar(frame('a', png()), frame('b', png()), frame('c', png()));
+  assert.equal((await owner.call('PUT', `/ofrendas/${id}`, three)).status, 402);
+  await owner.call('POST', '/checkout', { feature: 'extraPhotos', altarId: id });
+  const form = stripe.calls[0].form;
+  // A delayed payment: first "completed but unpaid" (nothing yet), then "async payment succeeded".
+  assert.equal((await deliver(t, paid(form, 'checkout.session.completed', 'unpaid'))).status, 200);
+  assert.equal((await owner.call('PUT', `/ofrendas/${id}`, three)).status, 402, 'not paid yet, so nothing unlocked');
+  assert.equal((await deliver(t, paid(form, 'checkout.session.async_payment_succeeded'))).status, 200);
+  assert.equal((await owner.call('PUT', `/ofrendas/${id}`, three)).status, 200);
+  assert.deepEqual((await owner.json('GET', `/ofrendas/${id}/team`)).body.entitlements, { extraPhotos: true, sevenTiers: false });
+  assert.equal((await owner.call('POST', '/checkout', { feature: 'extraPhotos', altarId: id })).status, 409, 'and it is no longer for sale');
+
+  // Platinum, paid by card straight away.
+  await owner.call('POST', '/checkout', { feature: 'platinum' });
+  assert.equal((await deliver(t, paid(stripe.calls.at(-1).form))).status, 200);
+  assert.equal((await owner.json('GET', '/me')).body.user.plan, 'platinum');
+  for (let i = 0; i < 4; i++) assert.equal((await owner.call('POST', '/ofrendas')).status, 201);
+});
