@@ -104,7 +104,7 @@ Set up Stripe once (use test mode first):
 
 Setup you do once:
 - `npx wrangler d1 create digital-ofrenda`, put the ID in the config, then `npx wrangler d1 migrations apply digital-ofrenda`.
-- **Email:** write a tiny Worker for the provider you choose that accepts `POST /send` with `{to, subject, text}`, and bind it as `MAILER`. Templates are in `server/mail.mjs`. Links use `APP_URL`, never the Host header.
+- **Email:** `mailer/` is the `MAILER` Worker, and the only code that knows the provider (Resend). Steps: add and verify your sending domain in Resend (SPF and DKIM records), then `cd mailer`, copy `wrangler.example.toml` to `wrangler.toml`, set `MAIL_FROM` to an address on that domain, `npx wrangler secret put RESEND_API_KEY`, and `npx wrangler deploy`. Deploy it before the API Worker, whose `MAILER` binding points at it. It has no public address. To use another provider, change only `mailer/worker.mjs`. Templates are in `server/mail.mjs`. Links use `APP_URL`, never the Host header.
 - **Turnstile:** create a widget and `wrangler secret put TURNSTILE_SECRET`. Sign-in refuses requests without a valid token. `TURNSTILE_DISABLED=1` is for local development only, and the Worker returns 500 if neither is set.
 - **Rate limits:** add Cloudflare rate-limiting rules on `POST /auth/start`, `/auth/code` and `/auth/redeem`.
 - Tune the numbers in `server/rules.mjs`.
