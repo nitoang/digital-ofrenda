@@ -345,6 +345,8 @@ test('altars: the owner platinum plan unlocks everything on their altars, and on
   const mine = await t.altarFor(rich);
   const theirs = await t.altarFor(poor);
   assert.equal((await rich.call('PUT', `/ofrendas/${mine}`, big)).status, 200);
+  assert.deepEqual((await rich.json('GET', `/ofrendas/${mine}/team`)).body.entitlements, { extraPhotos: true, sevenTiers: true });
+  assert.deepEqual((await poor.json('GET', `/ofrendas/${theirs}/team`)).body.entitlements, { extraPhotos: false, sevenTiers: false });
   assert.equal((await poor.call('PUT', `/ofrendas/${theirs}`, big)).status, 402);
   // A free co-keeper editing a platinum owner's altar gets the owner's plan; a platinum co-keeper does not lend theirs.
   await rich.call('POST', `/ofrendas/${theirs}/invites`, { email: 'x@example.com' }); // not a member: 403
@@ -387,7 +389,8 @@ test('co-keepers: an invitation is bound to the invited email and works once', a
   assert.equal((await sam.call('PUT', `/ofrendas/${id}`, altar(frame('a', png())))).status, 200, 'a co-keeper can edit');
   const team = await sam.json('GET', `/ofrendas/${id}/team`);
   assert.deepEqual(team.body.members.map(m => [m.email, m.role]), [['owner@example.com', 'owner'], ['sam@example.com', 'keeper']]);
-  assert.deepEqual(Object.keys(team.body).sort(), ['members', 'role'], 'a co-keeper does not see invites, successor or takeover details');
+  assert.deepEqual(Object.keys(team.body).sort(), ['entitlements', 'members', 'role'], 'a co-keeper does not see invites, successor or takeover details');
+  assert.deepEqual(team.body.entitlements, { extraPhotos: false, sevenTiers: false });
   assert.equal((await sam.call('POST', `/ofrendas/${id}/invites`, { email: 'z@example.com' })).status, 403);
   assert.equal((await sam.call('PUT', `/ofrendas/${id}/successor`, { email: 'z@example.com' })).status, 403);
   assert.equal((await sam.call('DELETE', `/ofrendas/${id}`)).status, 403);

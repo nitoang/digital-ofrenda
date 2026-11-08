@@ -1,0 +1,3 @@
+# Pretty URLs that all show one page (status 200 = rewrite, not redirect). Longest first.
+/a/:id/keepers  /keepers.html  200
+/a/:id          /a.html        200

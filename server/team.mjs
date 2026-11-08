@@ -30,13 +30,17 @@ export async function handleTeam(request, env, deps, id) {
   const s = await asRole(request, env, deps, id, ['owner', 'keeper']);
   if (isResponse(s)) return s;
   const members = (await store.listMembers(env.DB, id)).map(m => ({ userId: m.user_id, email: m.email, role: m.role }));
-  if (s.role !== 'owner') return json({ role: s.role, members });
+  // Which upgrades apply here (bought for the altar, or through the owner's platinum plan), so the page can
+  // switch the matching options on in the editor. The server still enforces every limit on save.
+  const entitlements = await store.getEntitlements(env.DB, id, FEATURES);
+  if (s.role !== 'owner') return json({ role: s.role, members, entitlements });
   const now = deps.now();
   const successor = await store.getSuccessor(env.DB, id);
   const claim = await store.getClaim(env.DB, id);
   return json({
     role: 'owner',
     members,
+    entitlements,
     invites: (await store.listInvites(env.DB, id, now)).map(i => ({ id: i.id, email: i.email, expiresAt: i.expires_at })),
     successor: successor ? { email: successor.email, accepted: !!successor.accepted_user_id } : null,
     claim: claim && !claim.cancelled_at && !claim.completed_at ? { requestedAt: claim.requested_at, executesAt: claim.executes_at } : null,
