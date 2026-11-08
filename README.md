@@ -134,29 +134,6 @@ How it behaves:
 
 **Try it locally:** `npm run dev`, then open http://localhost:8787. It runs the real pages and the real Worker code on a throwaway in-memory database, and prints the emails (with your sign-in code) in the terminal. Everything resets when you stop it.
 
-### The website (`site/`)
-
-`site/` is a small website, with no framework and no dependencies, that uses the routes above. It is everything you deploy to the web; `server/`, `tests/` and the demo pages stay out.
-
-| Page | What it does |
-|---|---|
-| `/` | Short welcome with a link to sign in. |
-| `/signin` | Email, then the 6-digit code. Also handles the emailed link (a button press, so mail scanners can't use it up). |
-| `/my` | Your ofrendas, starting a new one, the ofrendas you agreed to look after (ask to take over, complete the handover), sign out. |
-| `/a/<id>` | The altar. Keepers get the editor, everyone else a read-only view that refreshes every 15 seconds. Has a copy-link box. |
-| `/a/<id>/keepers` | Owner: invite co-keepers, name or remove a successor, stop a takeover request, delete. Co-keepers: leave. |
-| `/invite`, `/successor` | Where the emailed invitation and successor-request links land. |
-
-How it behaves:
-- It plugs the Worker into the component through the shared-storage hook (`site/storage.js`), and turns the editor's options on from what the server says the altar is entitled to. The server still enforces every limit, so the page is a convenience, not protection.
-- Everything is built with `textContent`, so names and emails can never turn into markup. The pages run under a strict policy (`site/_headers`): only this site's scripts and styles, plus Turnstile. The tests apply that exact file, so a page that needs anything looser fails them.
-- Emailed tokens are kept out of URLs: they arrive after the `#`, are removed from the address bar at once, and wait in session storage only while the person signs in.
-- The "upgrade" dialog explains an option and says purchases are not open yet. Add the purchase button there (`site/upgrade.js`) once your Stripe Checkout route exists.
-
-**Deploying (Cloudflare Pages + Worker, one hostname).** Build command `npm run build:site`, output directory `site`. Then give the Worker these paths on the same hostname, so the page and the API share one origin: `/auth/*`, `/me`, `/ofrendas`, `/ofrendas/*`, `/invites/*`, `/successor/*`, `/stripe/*`. Pages serves everything else (note `/successor` with nothing after it is a page). Set your Turnstile site key in `site/config.js`. Cloudflare's Turnstile documentation lists the exact content-security-policy entries it needs; `site/_headers` allows the usual ones, so check them against the current docs.
-
-**Try it locally:** `npm run dev`, then open http://localhost:8787. It runs the real pages and the real Worker code on a throwaway in-memory database, and prints the emails (with your sign-in code) in the terminal. Everything resets when you stop it.
-
 ## Tests
 
 Browser tests (Playwright + Node's built-in test runner) load the pages straight from disk:
