@@ -14,7 +14,7 @@ export const FEATURES = Object.freeze(['extraPhotos', 'sevenTiers']); // the pai
 export const LIMITS = Object.freeze({
   maxItems: 200,
   maxImageChars: 400_000,   // base64 characters per photo (~300 KB); the component downsizes to 480px
-  maxStateChars: 2_000_000, // whole saved altar, as JSON
+  maxStateChars: 1_500_000, // whole saved altar, as JSON (D1 rows max out near 2 MB; leave headroom)
 });
 
 // Keep in step with ITEMS in ofrenda.js (tests/server.test.js fails if they drift apart).

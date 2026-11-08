@@ -2,10 +2,25 @@ name = "digital-ofrenda-api"
 main = "worker.mjs"
 compatibility_date = "2025-01-01"
 
-[[kv_namespaces]]
-binding = "OFRENDAS"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+[[d1_databases]]
+binding = "DB"
+database_name = "digital-ofrenda"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+migrations_dir = "migrations"   # npx wrangler d1 migrations apply digital-ofrenda
 
-# Secrets (never commit them):  npx wrangler secret put STRIPE_WEBHOOK_SECRET
-# [vars]
-# ALLOW_ORIGIN = "https://your-site.example"
+# A Worker you write for your email provider: it accepts POST /send with { to, subject, text }.
+[[services]]
+binding = "MAILER"
+service = "digital-ofrenda-mailer"
+
+[vars]
+# Serve your page and this Worker from this same origin: sign-in is a cookie and there is no CORS.
+APP_URL = "https://REPLACE-WITH-YOUR-SITE"
+# TURNSTILE_DISABLED = "1"                      # local development ONLY; never in production
+
+# Secrets (never commit them):
+#   npx wrangler secret put TURNSTILE_SECRET
+#   npx wrangler secret put STRIPE_WEBHOOK_SECRET
+#
+# Also add Cloudflare rate-limiting rules (dashboard: Security > WAF > Rate limiting rules) for
+# POST /auth/start, /auth/code and /auth/redeem.
