@@ -29,7 +29,14 @@ const sign = '\n\n— digital-ofrenda\nIf you did not expect this email, you can
 export const signInMessage = ({ to, link, code }) => ({
   to,
   subject: `Your sign-in code is ${code}`,
-  text: `Sign in to your ofrendas:\n\n${link}\n\nOr enter this code on the sign-in page: ${code}\n\nBoth work once and expire in 15 minutes.${sign}`,
+  text: `Here's your sign-in link. Click on the link below to start building.\n\nSign in to Digifrenda:\n${link}\n\nBonus: no password required, as I recognize you've probably got a lot on your plate.\n\nPrefer a code? Enter this on the sign-in page: ${code}\n\nThe link and the code each work once and expire in 15 minutes.\n\nDidn't ask for this? Ignore it.\n\nDigifrenda 🧡`,
+});
+
+// Sent once, the first time an address signs in.
+export const welcomeMessage = ({ to, link }) => ({
+  to,
+  subject: 'Welcome to Digifrenda',
+  text: `Welcome to Digifrenda.\n\nAs part of our loving community, we're excited that you're taking part in this journey to share your loved one's memories with others.\n\nWe started an ofrenda for you, called My Ofrenda. Rename it for the person you're remembering, and make it yours. Whenever you're ready, you can start more ofrendas for other loved ones.\n\nHow I initially built mine:\n1. Picked a photo.\n2. Added one thing they loved (my grandma loved coffee, for example).\n3. Wrote one thing I remember.\n\nOr go all out. It's all how you want to reflect the person.\n\nOpen My Ofrenda:\n${link}${warmSign}`,
 });
 
 // Shared wording for the two "someone shared an ofrenda with you" emails (view only, and view and edit).

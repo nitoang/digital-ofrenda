@@ -1319,3 +1319,46 @@ test('names: a handover keeps the name, and a name never shadows a real id', asy
   // An id-shaped string is refused as a name, so /a/<id> always means that id.
   assert.equal((await heir.json('PUT', `/ofrendas/${id}/slug`, { slug: id })).body.error, 'bad_name');
 });
+
+test('first sign-in: one welcome email, and (when enabled) a starter ofrenda called My Ofrenda', async () => {
+  const t = await setup({ env: { STARTER_OFRENDA: '1' } });
+  const { cookie } = await t.signIn('new@example.com');
+  const welcome = (await t.mailTo('new@example.com')).filter(m => m.subject === 'Welcome to Digifrenda');
+  assert.equal(welcome.length, 1);
+  assert.match(welcome[0].text, /My Ofrenda/);
+  const me = await (await t.call('GET', '/me', { cookie })).json();
+  assert.equal(me.altars.length, 1);
+  const state = await (await t.call('GET', `/ofrendas/${me.altars[0].id}`)).json();
+  assert.equal(state.name, 'My Ofrenda');
+  assert.ok(state.items.length > 0);
+  const { validateOfrenda } = await import('../server/validate.mjs');
+  assert.equal(validateOfrenda(state, { entitlements: {} }).ok, true);
+  assert.ok(welcome[0].text.includes(`${ORIGIN}/a/${me.altars[0].id}`));
+
+  // Signing in again sends no second welcome and makes no second ofrenda.
+  await t.signIn('new@example.com');
+  assert.equal((await t.mailTo('new@example.com')).filter(m => m.subject === 'Welcome to Digifrenda').length, 1);
+  assert.equal((await (await t.call('GET', '/me', { cookie })).json()).altars.length, 1);
+
+  // They can still add more, up to the free limit (the starter counts).
+  assert.equal((await t.call('POST', '/ofrendas', { cookie })).status, 201);
+  assert.equal((await t.call('POST', '/ofrendas', { cookie })).status, 201);
+  assert.equal((await t.call('POST', '/ofrendas', { cookie })).status, 402);
+});
+
+test('first sign-in without STARTER_OFRENDA: welcome email only, no ofrenda', async () => {
+  const t = await setup();
+  const { cookie } = await t.signIn('plain@example.com');
+  assert.equal((await t.mailTo('plain@example.com')).filter(m => m.subject === 'Welcome to Digifrenda').length, 1);
+  assert.equal((await (await t.call('GET', '/me', { cookie })).json()).altars.length, 0);
+});
+
+test('a share email never calls the loved one "My Ofrenda"', async () => {
+  const t = await setup({ env: { STARTER_OFRENDA: '1' } });
+  const { cookie } = await t.signIn('own@example.com');
+  const id = (await (await t.call('GET', '/me', { cookie })).json()).altars[0].id;
+  const res = await t.call('POST', `/ofrendas/${id}/share`, { cookie, body: { email: 'friend@example.com', access: 'view' } });
+  assert.equal(res.status, 201);
+  const mail = (await t.mailTo('friend@example.com'))[0];
+  assert.doesNotMatch(mail.subject + mail.text, /My Ofrenda/);
+});

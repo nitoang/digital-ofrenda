@@ -13,7 +13,8 @@
 
 import { json, readJson, isResponse, normalizeEmail, sha256Hex, newToken, newId, newCode, timingSafeEqual } from './util.mjs';
 import * as store from './store.mjs';
-import { queueMail, signInMessage, claimCancelledMessage } from './mail.mjs';
+import { queueMail, signInMessage, welcomeMessage, claimCancelledMessage } from './mail.mjs';
+import { starterState } from './starter.mjs';
 import { RULES } from './rules.mjs';
 
 const COOKIE = '__Host-session';
@@ -83,10 +84,25 @@ export async function handleStart(request, env, deps) {
   return json({ challenge });
 }
 
+// A brand-new account starts with one basic ofrenda and a welcome email. Neither may ever block signing in.
+async function welcomeNewUser(env, deps, user, now) {
+  let link = `${env.APP_URL}/my`;
+  if (env.STARTER_OFRENDA === '1') {
+    try {
+      const id = newId();
+      await store.createAltar(env.DB, { id, userId: user.id, now });
+      await store.saveState(env.DB, id, JSON.stringify(starterState()), now);
+      link = `${env.APP_URL}/a/${id}`;
+    } catch (e) { console.error('starter ofrenda not created:', e?.message); }
+  }
+  queueMail(deps, () => deps.mailer.send(welcomeMessage({ to: user.email, link })));
+}
+
 async function startSession(env, deps, email) {
   const now = deps.now();
   const user = await store.findOrCreateUser(env.DB, { id: newId(), email, now });
   await noteActivity(env, deps, user.id);
+  if (user.created) await welcomeNewUser(env, deps, user, now);
   const token = newToken();
   await store.createSession(env.DB, { idHash: await sha256Hex(token), userId: user.id, now, ttl: RULES.sessionTtl });
   return json({ email: user.email, plan: user.plan ?? null }, 200, { 'set-cookie': cookie(token, Math.floor(RULES.sessionTtl / 1000)) });

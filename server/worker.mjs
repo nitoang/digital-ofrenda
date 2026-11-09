@@ -6,6 +6,7 @@
 //   MAILER                  service binding to a Worker that sends email (see mail.mjs)
 //   APP_URL                 your site, e.g. "https://ofrenda.example.com". Serve the page and this Worker from
 //                           this same origin: sign-in uses a cookie, and there is deliberately no CORS.
+//   STARTER_OFRENDA         "1": a new account starts with one basic ofrenda, "My Ofrenda". Optional.
 //   TURNSTILE_SECRET        Cloudflare Turnstile secret; sign-in refuses requests without a valid token.
 //                           Set TURNSTILE_DISABLED="1" instead ONLY for local development.
 //   STRIPE_WEBHOOK_SECRET   whsec_... from Stripe

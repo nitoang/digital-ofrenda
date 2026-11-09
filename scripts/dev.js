@@ -6,6 +6,7 @@ const { startSite } = require('../tests/site');
 const port = Number(process.env.PORT) || 8787;
 startSite({
   port,
+  env: { STARTER_OFRENDA: '1' },
   onMail: m => console.log(`\n--- email to ${m.to} ---\nSubject: ${m.subject}\n\n${m.text}\n`),
 }).then(site => {
   console.log(`Digital Ofrenda is running at ${site.url}`);

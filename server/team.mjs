@@ -67,7 +67,8 @@ async function altarName(env, id) {
   try {
     const row = await store.getAltar(env.DB, id);
     const name = row?.state ? JSON.parse(row.state).name : '';
-    return typeof name === 'string' ? name.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+    const clean = typeof name === 'string' ? name.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+    return clean === RULES.starterName ? '' : clean; // the placeholder is not a loved one's name
   } catch { return ''; }
 }
 

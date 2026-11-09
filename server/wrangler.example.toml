@@ -24,6 +24,8 @@ service = "digital-ofrenda-mailer"
 [vars]
 # Serve your page and this Worker from this same origin: sign-in is a cookie and there is no CORS.
 APP_URL = "https://REPLACE-WITH-YOUR-SITE"
+# Every new account starts with one basic ofrenda called "My Ofrenda" (it counts toward the free limit). Remove to turn off.
+STARTER_OFRENDA = "1"
 # Create three one-time Prices in the Stripe dashboard and put their ids here:
 # STRIPE_PRICE_EXTRA_PHOTOS = "price_..."
 # STRIPE_PRICE_SEVEN_TIERS = "price_..."

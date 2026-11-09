@@ -11,9 +11,11 @@ const stmt = (db, sql, ...args) => db.prepare(sql).bind(...args);
 // ---------- users ----------
 export const getUser = (db, id) => one(db, 'SELECT id, email, plan, last_seen_at FROM users WHERE id = ?', id);
 export const findUserByEmail = (db, email) => one(db, 'SELECT id, email, plan, last_seen_at FROM users WHERE email = ?', email);
+// `created` is true only for the request that made the account (a second device racing it gets false).
 export async function findOrCreateUser(db, { id, email, now }) {
-  await run(db, 'INSERT OR IGNORE INTO users (id, email, created_at, last_seen_at) VALUES (?, ?, ?, ?)', id, email, now, now);
-  return findUserByEmail(db, email);
+  const r = await run(db, 'INSERT OR IGNORE INTO users (id, email, created_at, last_seen_at) VALUES (?, ?, ?, ?)', id, email, now, now);
+  const user = await findUserByEmail(db, email);
+  return user && { ...user, created: r?.meta?.changes > 0 };
 }
 export const touchUser = (db, id, now) => run(db, 'UPDATE users SET last_seen_at = ? WHERE id = ?', now, id);
 export async function setPlan(db, id, plan) {
