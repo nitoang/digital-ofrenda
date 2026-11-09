@@ -435,6 +435,146 @@ test('co-keepers: invitations expire, can be revoked, and are limited', async ()
   assert.equal((await t.mailTo('victim@example.com')).length, t.RULES.invitesPerEmailPerDay);
 });
 
+// ---------- sharing: view only, or view and edit ----------
+
+test('sharing: view only emails the link, gives no editing, and keeps only a hash of the address', async () => {
+  const t = await setup();
+  const owner = await t.signIn('owner@example.com');
+  const id = await t.altarFor(owner, altar(frame('a', png())));
+
+  const res = await owner.json('POST', `/ofrendas/${id}/share`, { email: ' Sam@Example.com ', access: 'view', note: 'Thinking of you both.' });
+  assert.deepEqual([res.status, res.body], [201, { access: 'view' }]);
+  const [mail] = await t.mailTo('sam@example.com');
+  assert.equal(mail.subject, 'owner@example.com shared an ofrenda for Abuela with you');
+  assert.ok(mail.text.includes(`https://ofrenda.test/a/${id}`), 'the link is the public address of the ofrenda');
+  assert.ok(mail.text.includes('A note from owner@example.com:\nThinking of you both.'));
+  assert.ok(mail.text.includes('Come sit with it for a minute'), 'the view-only wording does not invite them to add things');
+  assert.ok(!mail.text.includes('#i='), 'a view-only share carries no invitation token');
+
+  // Looking needs no account. Editing, and the team page, still do.
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).status, 200);
+  const sam = await t.signIn('sam@example.com');
+  assert.equal((await sam.call('PUT', `/ofrendas/${id}`, altar(frame('a', png())))).status, 403, 'view only cannot edit');
+  assert.equal((await sam.call('GET', `/ofrendas/${id}/team`)).status, 403);
+  assert.deepEqual((await sam.json('GET', '/me')).body.altars, [], 'view only does not add it to their ofrendas');
+  assert.equal(t.db.prepare('SELECT COUNT(*) AS n FROM invites').get().n, 0, 'no co-keeper invitation was created');
+
+  const stored = t.db.prepare('SELECT * FROM view_shares').all();
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].email_hash, sha('sam@example.com'));
+  assert.ok(!Object.values(stored[0]).some(v => String(v).includes('sam@example.com')), 'the address itself is never stored');
+});
+
+test('sharing: view and edit makes a co-keeper through the same invitation as before', async () => {
+  const t = await setup();
+  const owner = await t.signIn('owner@example.com');
+  const id = await t.altarFor(owner, altar());
+  const res = await owner.json('POST', `/ofrendas/${id}/share`, { email: 'sam@example.com', access: 'edit', note: 'Please add her recipes.' });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.access, 'edit');
+  const [mail] = await t.mailTo('sam@example.com');
+  assert.match(mail.subject, /owner@example\.com invited you to help keep an ofrenda/);
+  assert.ok(mail.text.includes('A note from owner@example.com:\nPlease add her recipes.'));
+  assert.ok(mail.text.includes('add a note or something they loved'), 'the edit wording invites them to add');
+  const token = /https:\/\/ofrenda\.test\/invite#i=([\w-]{43})/.exec(mail.text)[1];
+  assert.equal(t.db.prepare('SELECT COUNT(*) AS n FROM view_shares').get().n, 0, 'an edit share is not a view share');
+
+  const sam = await t.signIn('sam@example.com');
+  assert.equal((await sam.call('PUT', `/ofrendas/${id}`, altar(frame('a', png())))).status, 403, 'not until they accept');
+  assert.deepEqual((await sam.json('POST', '/invites/accept', { token })).body, { id });
+  assert.equal((await sam.call('PUT', `/ofrendas/${id}`, altar(frame('a', png())))).status, 200, 'then they can edit');
+
+  assert.equal((await owner.json('POST', `/ofrendas/${id}/share`, { email: 'sam@example.com', access: 'edit' })).body.error, 'already_member');
+  assert.equal((await owner.json('POST', `/ofrendas/${id}/share`, { email: 'sam@example.com', access: 'view' })).body.error, 'already_member', 'they can already view');
+});
+
+test('sharing: only the owner shares, and the choice, the address and the note are checked', async () => {
+  const t = await setup();
+  const owner = await t.signIn('owner@example.com');
+  const id = await t.altarFor(owner, altar());
+  const share = body => owner.json('POST', `/ofrendas/${id}/share`, body);
+
+  assert.equal((await t.call('POST', `/ofrendas/${id}/share`, { body: { email: 'a@example.com', access: 'view' } })).status, 401);
+  const stranger = await t.signIn('stranger@example.com');
+  assert.equal((await stranger.call('POST', `/ofrendas/${id}/share`, { email: 'a@example.com', access: 'view' })).status, 403);
+  assert.equal((await t.call('POST', `/ofrendas/${id}/share`, { body: { email: 'a@example.com', access: 'view' }, cookie: owner.cookie, origin: 'https://evil.test' })).status, 403, 'another origin is refused');
+
+  await owner.call('POST', `/ofrendas/${id}/invites`, { email: 'keeper@example.com' });
+  const keeper = await t.signIn('keeper@example.com');
+  await keeper.call('POST', '/invites/accept', { token: await t.tokenFrom('keeper@example.com', /#i=([\w-]{43})/) });
+  assert.equal((await keeper.call('POST', `/ofrendas/${id}/share`, { email: 'a@example.com', access: 'view' })).status, 403, 'a co-keeper cannot share');
+
+  assert.equal((await share({ email: 'a@example.com' })).body.error, 'bad_access');
+  assert.equal((await share({ email: 'a@example.com', access: 'admin' })).body.error, 'bad_access', 'there is no way to grant ownership');
+  assert.equal((await share({ email: 'a@example.com', access: ['view'] })).body.error, 'bad_access');
+  assert.equal((await share({ email: 'nope', access: 'view' })).body.error, 'bad_email');
+  assert.equal((await share({ access: 'view' })).body.error, 'bad_email');
+  assert.equal((await share({ email: 'a@example.com', access: 'view', note: 'See https://evil.example/login' })).body.error, 'note_has_link');
+  assert.equal((await share({ email: 'a@example.com', access: 'view', note: 'visit www.example.com' })).body.error, 'note_has_link');
+  assert.equal((await share({ email: 'a@example.com', access: 'view', note: 'go to bank.com' })).body.error, 'note_has_link');
+  assert.equal((await share({ email: 'a@example.com', access: 'view', note: 'x'.repeat(t.RULES.noteMax + 1) })).body.error, 'note_too_long');
+  assert.equal((await share({ email: 'a@example.com', access: 'view', note: 42 })).body.error, 'bad_note');
+  assert.equal((await t.mailTo('a@example.com')).length, 0, 'nothing was sent for any refused request');
+
+  // An ordinary note, with a blank line and stray control characters, is cleaned and sent.
+  assert.equal((await share({ email: 'a@example.com', access: 'view', note: '  She loved you.\n\nCome by soon.\u0007 ' })).status, 201);
+  const [mail] = await t.mailTo('a@example.com');
+  assert.ok(mail.text.includes('A note from owner@example.com:\nShe loved you.\n\nCome by soon.\n'));
+  assert.ok(!mail.text.includes('\u0007'));
+  assert.equal((await share({ email: 'b@example.com', access: 'view', note: '' })).status, 201);
+  assert.ok(!(await t.mailTo('b@example.com'))[0].text.includes('A note from'), 'no note, no note block');
+});
+
+test('sharing: the link uses the ofrenda name once it has one, and the subject is safe', async () => {
+  const t = await setup();
+  const owner = await t.signIn('owner@example.com');
+  const id = await t.altarFor(owner, { ...altar(), name: 'Abuela\r\nBcc: x@evil.test' });
+  assert.equal((await owner.call('PUT', `/ofrendas/${id}/slug`, { slug: 'abuela-rosa' })).status, 200);
+  assert.equal((await owner.call('POST', `/ofrendas/${id}/share`, { email: 'sam@example.com', access: 'view' })).status, 201);
+  const [mail] = await t.mailTo('sam@example.com');
+  assert.ok(mail.text.includes('https://ofrenda.test/a/abuela-rosa'));
+  assert.ok(!/[\r\n]/.test(mail.subject), 'a name with line breaks cannot add mail headers');
+
+  const bare = await t.altarFor(owner);
+  assert.equal((await owner.call('POST', `/ofrendas/${bare}/share`, { email: 'kim@example.com', access: 'view' })).status, 201);
+  assert.equal((await t.mailTo('kim@example.com'))[0].subject, 'owner@example.com shared an ofrenda with you', 'no name yet, so none in the subject');
+});
+
+test('sharing: view-only emails are limited per address and per ofrenda, and old records are cleared', async () => {
+  const t = await setup();
+  const owner = await t.signIn('owner@example.com');
+  const id = await t.altarFor(owner, altar());
+  for (let i = 0; i < t.RULES.sharesPerEmailPerDay; i++) assert.equal((await owner.call('POST', `/ofrendas/${id}/share`, { email: 'victim@example.com', access: 'view' })).status, 201);
+  assert.equal((await owner.json('POST', `/ofrendas/${id}/share`, { email: 'victim@example.com', access: 'view' })).status, 429);
+  const other = await t.altarFor(owner, altar());
+  assert.equal((await owner.json('POST', `/ofrendas/${other}/share`, { email: 'Victim@Example.com', access: 'view' })).body.error, 'too_many_shares', 'the limit follows the address across ofrendas');
+  assert.equal((await t.mailTo('victim@example.com')).length, t.RULES.sharesPerEmailPerDay);
+
+  const busy = await t.altarFor(owner, altar());
+  for (let i = 0; i < t.RULES.sharesPerAltarPerDay; i++) assert.equal((await owner.call('POST', `/ofrendas/${busy}/share`, { email: `p${i}@example.com`, access: 'view' })).status, 201);
+  assert.equal((await owner.json('POST', `/ofrendas/${busy}/share`, { email: 'one-more@example.com', access: 'view' })).body.error, 'share_limit');
+
+  t.tick(DAY + MIN); // a day later: allowed again, and the next sign-in request clears the old records
+  const again = await t.signIn('owner@example.com');
+  assert.equal(t.db.prepare('SELECT COUNT(*) AS n FROM view_shares').get().n, 0, 'records older than a day are gone');
+  assert.equal((await again.call('POST', `/ofrendas/${busy}/share`, { email: 'one-more@example.com', access: 'view' })).status, 201);
+});
+
+test('sharing: deleting the ofrenda or the account removes the share records', async () => {
+  const t = await setup();
+  const owner = await t.signIn('owner@example.com');
+  const gone = await t.altarFor(owner, altar());
+  await owner.call('POST', `/ofrendas/${gone}/share`, { email: 'a@example.com', access: 'view' });
+  assert.equal((await owner.call('DELETE', `/ofrendas/${gone}`)).status, 200);
+  assert.equal(t.db.prepare('SELECT COUNT(*) AS n FROM view_shares').get().n, 0, 'deleting the ofrenda clears them');
+
+  const kept = await t.altarFor(owner, altar());
+  await owner.call('POST', `/ofrendas/${kept}/share`, { email: 'b@example.com', access: 'view' });
+  assert.equal(t.db.prepare('SELECT COUNT(*) AS n FROM view_shares').get().n, 1);
+  assert.equal((await owner.call('DELETE', '/me', { email: 'owner@example.com', deleteOfrendas: true })).status, 200);
+  assert.equal(t.db.prepare('SELECT COUNT(*) AS n FROM view_shares').get().n, 0, 'deleting the account clears them');
+});
+
 test('co-keepers: the owner can remove one, one can leave, and the owner cannot go', async () => {
   const t = await setup();
   const owner = await t.signIn('owner@example.com');

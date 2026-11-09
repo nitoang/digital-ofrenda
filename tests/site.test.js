@@ -199,6 +199,41 @@ withSite('a third photo opens the upgrade dialog; Platinum switches the options 
   await ctx.close();
 });
 
+withSite('sharing: the owner chooses view only or view and edit', async () => {
+  const owner = await visitor();
+  await signIn(owner.page, 'owner@example.com');
+  const id = await startOfrenda(owner.page);
+  await owner.page.goto(`${site.url}/a/${id}/keepers`);
+  await assertLabelled(owner.page);
+  assert.ok(await owner.page.getByLabel('View only').isChecked(), 'view only is the default');
+  assert.ok(!(await owner.page.getByLabel('View and edit').isChecked()));
+
+  // A note with a web link is refused, and nothing is sent.
+  await owner.page.getByLabel('Email address', { exact: true }).fill('kim@example.com');
+  await owner.page.getByLabel('A note to go with it (optional)').fill('see https://example.com/now');
+  await owner.page.getByRole('button', { name: 'Share' }).click();
+  await owner.page.getByRole('alert').filter({ hasText: 'Notes cannot contain web links.' }).waitFor();
+  assert.equal(site.sent.filter(m => m.to === 'kim@example.com').length, 0);
+
+  // View only: Kim gets the link and a note, no invitation, and does not appear among the keepers.
+  await owner.page.getByLabel('A note to go with it (optional)').fill('She would have loved you being here.');
+  await owner.page.getByRole('button', { name: 'Share' }).click();
+  await owner.page.getByText('Link sent.').waitFor();
+  const view = await site.mail('kim@example.com', /shared an ofrenda/);
+  assert.ok(view.text.includes(`/a/${id}`));
+  assert.ok(view.text.includes('She would have loved you being here.'));
+  assert.ok(!view.text.includes('#i='), 'no invitation was sent');
+  assert.equal(await owner.page.getByText('kim@example.com').count(), 0, 'view only people are not keepers');
+
+  // View and edit: Sam is invited and shows as waiting.
+  await owner.page.getByLabel('Email address', { exact: true }).fill('sam@example.com');
+  await owner.page.getByLabel('View and edit').check();
+  await owner.page.getByRole('button', { name: 'Share' }).click();
+  await owner.page.getByText('Invitation sent.').waitFor();
+  await owner.page.getByText('sam@example.com').waitFor();
+  await site.mail('sam@example.com', /invited you to help keep an ofrenda/);
+});
+
 withSite('co-keepers: invite by email, accept in the browser, edit together, remove', async () => {
   const owner = await visitor();
   await signIn(owner.page, 'owner@example.com');
@@ -206,7 +241,8 @@ withSite('co-keepers: invite by email, accept in the browser, edit together, rem
   await owner.page.goto(`${site.url}/a/${id}/keepers`);
   await assertLabelled(owner.page);
   await owner.page.getByLabel('Email address', { exact: true }).fill('Sam@Example.com');
-  await owner.page.getByRole('button', { name: 'Send invitation' }).click();
+  await owner.page.getByLabel('View and edit').check();
+  await owner.page.getByRole('button', { name: 'Share' }).click();
   await owner.page.getByText('Invitation sent.').waitFor();
   await owner.page.getByText('sam@example.com').waitFor();
 
@@ -396,7 +432,8 @@ withShop('a co-keeper is told to ask the owner, and cancelling a payment says no
   assert.equal(await owner.page.evaluate(async ([id, state]) => (await fetch('/ofrendas/' + id, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(state) })).status, [id, two]), 200);
   await owner.page.goto(`${site.url}/a/${id}/keepers`);
   await owner.page.getByLabel('Email address', { exact: true }).fill('sam@example.com');
-  await owner.page.getByRole('button', { name: 'Send invitation' }).click();
+  await owner.page.getByLabel('View and edit').check();
+  await owner.page.getByRole('button', { name: 'Share' }).click();
   await owner.page.getByText('Invitation sent.').waitFor();
 
   const sam = await visitor();

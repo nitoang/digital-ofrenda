@@ -12,6 +12,9 @@ export const RULES = Object.freeze({
   inviteTtl: 7 * DAY,
   maxKeepers: 10,                      // co-keepers plus pending invites, per altar
   invitesPerEmailPerDay: 3,
+  sharesPerEmailPerDay: 3,             // view-only links emailed to one address, across all altars
+  sharesPerAltarPerDay: 20,            // view-only links one altar may email in a day
+  noteMax: 280,                        // characters in the optional note that goes with a shared link
   inactiveAfter: 180 * DAY,            // owner silence before a successor may start a takeover request
   slugsPerAltar: 5,                    // names one ofrenda may have used, including the current one
   emailChangeTtl: 15 * MINUTE,         // the code sent to a new address

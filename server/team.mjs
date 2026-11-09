@@ -13,7 +13,7 @@
 import { json, readJson, isResponse, normalizeEmail, sha256Hex, newToken, newId, DAY } from './util.mjs';
 import * as store from './store.mjs';
 import { requireUser } from './auth.mjs';
-import { queueMail, inviteMessage, successorAskMessage, claimNoticeMessage, claimCancelledMessage, handoverMessage } from './mail.mjs';
+import { queueMail, inviteMessage, viewShareMessage, successorAskMessage, claimNoticeMessage, claimCancelledMessage, handoverMessage } from './mail.mjs';
 import { RULES } from './rules.mjs';
 import { FEATURES } from './validate.mjs';
 
@@ -49,6 +49,28 @@ export async function handleTeam(request, env, deps, id) {
   });
 }
 
+// The optional note that travels with a shared link or invitation. It is plain text in an email that goes out
+// from our domain to someone the owner chose, so it is short and cannot carry a web address.
+// Returns the cleaned note ('' for none), or an error code.
+const LINKISH = /https?:|www\.|\b[a-z0-9-]{2,}\.(?:com|net|org|io|co|app|me|ly|xyz|info|gg|dev|site|online|top|link|click)\b/i;
+export function cleanNote(v) {
+  if (v == null || v === '') return { note: '' };
+  if (typeof v !== 'string') return { error: 'bad_note' };
+  const note = v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').replace(/\r\n?/g, '\n').trim();
+  if (note.length > RULES.noteMax) return { error: 'note_too_long' };
+  if (LINKISH.test(note)) return { error: 'note_has_link' };
+  return { note };
+}
+
+// The loved one's name as the owner typed it into the altar, made safe for a subject line.
+async function altarName(env, id) {
+  try {
+    const row = await store.getAltar(env.DB, id);
+    const name = row?.state ? JSON.parse(row.state).name : '';
+    return typeof name === 'string' ? name.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+  } catch { return ''; }
+}
+
 export async function handleInvite(request, env, deps, id) {
   const s = await asRole(request, env, deps, id, ['owner']);
   if (isResponse(s)) return s;
@@ -56,6 +78,11 @@ export async function handleInvite(request, env, deps, id) {
   if (isResponse(body)) return body;
   const email = normalizeEmail(body.email);
   if (!email) return json({ error: 'bad_email', message: 'Enter a valid email address.' }, 400);
+  return sendInvite(env, deps, id, s, email, '');
+}
+
+// "View and edit": make the person a co-keeper (once they sign in with this address and accept).
+async function sendInvite(env, deps, id, s, email, note) {
   const now = deps.now();
   const members = await store.listMembers(env.DB, id);
   const pending = await store.listInvites(env.DB, id, now);
@@ -67,8 +94,42 @@ export async function handleInvite(request, env, deps, id) {
   const token = newToken();
   const inviteId = newId(8);
   await store.addInvite(env.DB, { id: inviteId, tokenHash: await sha256Hex(token), altarId: id, email, invitedBy: s.user.id, now, ttl: RULES.inviteTtl });
-  queueMail(deps, () => deps.mailer.send(inviteMessage({ to: email, from: s.user.email, link: `${env.APP_URL}/invite#i=${token}` })));
-  return json({ id: inviteId }, 201);
+  const name = await altarName(env, id);
+  queueMail(deps, () => deps.mailer.send(inviteMessage({ to: email, from: s.user.email, link: `${env.APP_URL}/invite#i=${token}`, name, note })));
+  return json({ id: inviteId, access: 'edit' }, 201);
+}
+
+// "View only": email the link. Anyone who has the link can view an ofrenda, so this grants nothing new; it is a
+// courtesy that says who it is from. Only a hash of the address is kept, to stop one inbox being flooded.
+async function sendViewLink(env, deps, id, s, email, note) {
+  const now = deps.now();
+  const members = await store.listMembers(env.DB, id);
+  if (members.some(m => m.email === email)) return json({ error: 'already_member' }, 409);
+  const emailHash = await sha256Hex(email);
+  if ((await store.countViewSharesToEmail(env.DB, emailHash, now - DAY)) >= RULES.sharesPerEmailPerDay) return json({ error: 'too_many_shares' }, 429);
+  if ((await store.countViewSharesFromAltar(env.DB, id, now - DAY)) >= RULES.sharesPerAltarPerDay) return json({ error: 'share_limit' }, 429);
+
+  await store.addViewShare(env.DB, { id: newId(8), altarId: id, sharedBy: s.user.id, emailHash, now });
+  const ref = (await store.currentSlug(env.DB, id)) || id;
+  const name = await altarName(env, id);
+  queueMail(deps, () => deps.mailer.send(viewShareMessage({ to: email, from: s.user.email, link: `${env.APP_URL}/a/${ref}`, name, note })));
+  return json({ access: 'view' }, 201);
+}
+
+// One door for sharing: the owner picks what the person can do.
+//   access "view"  -> they get the link and can look
+//   access "edit"  -> they are invited as a co-keeper and can look and edit
+export async function handleShare(request, env, deps, id) {
+  const s = await asRole(request, env, deps, id, ['owner']);
+  if (isResponse(s)) return s;
+  const body = await readJson(request);
+  if (isResponse(body)) return body;
+  if (body.access !== 'view' && body.access !== 'edit') return json({ error: 'bad_access', message: 'Choose view only, or view and edit.' }, 400);
+  const email = normalizeEmail(body.email);
+  if (!email) return json({ error: 'bad_email', message: 'Enter a valid email address.' }, 400);
+  const cleaned = cleanNote(body.note);
+  if (cleaned.error) return json({ error: cleaned.error }, 400);
+  return body.access === 'edit' ? sendInvite(env, deps, id, s, email, cleaned.note) : sendViewLink(env, deps, id, s, email, cleaned.note);
 }
 
 export async function handleRevokeInvite(request, env, deps, id, inviteId) {

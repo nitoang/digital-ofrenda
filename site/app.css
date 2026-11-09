@@ -51,7 +51,11 @@ dialog::backdrop { background: rgba(42, 22, 64, .55); }
 
 .foot { display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; justify-content: center; padding: 16px; border-top: 1px solid var(--line); font-size: .9rem; }
 label.check { display: flex; align-items: center; gap: 8px; font-weight: normal; }
-input[type=checkbox] { width: 22px; height: 22px; }
+input[type=checkbox], input[type=radio] { width: 22px; height: 22px; flex: none; }
+textarea { display: block; width: 100%; min-height: 88px; padding: 8px 10px; font: inherit; border: 1px solid #8a7a9c; border-radius: 6px; background: #fff; color: var(--ink); resize: vertical; }
+fieldset.choices { border: 0; padding: 0; margin: 16px 0 8px; }
+fieldset.choices legend { font-weight: 600; padding: 0; margin-bottom: 4px; }
+fieldset.choices label.check { margin: 6px 0; min-height: 44px; }
 [hidden] { display: none !important; }
 .legal h2 { font-size: 1.2rem; }
 .legal ul { padding-left: 1.2rem; }
