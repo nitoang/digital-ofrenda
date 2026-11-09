@@ -134,7 +134,26 @@ export async function getRole(db, altarId, userId) {
 export const getOwner = (db, altarId) =>
   one(db, "SELECT u.id, u.email, u.plan, u.last_seen_at FROM altar_members m JOIN users u ON u.id = m.user_id WHERE m.altar_id = ? AND m.role = 'owner'", altarId);
 export const altarsForUser = (db, userId) =>
-  all(db, 'SELECT altar_id AS id, role FROM altar_members WHERE user_id = ? ORDER BY added_at, altar_id', userId);
+  all(db, `SELECT m.altar_id AS id, m.role, (SELECT slug FROM altar_slugs s WHERE s.altar_id = m.altar_id ORDER BY s.created_at DESC, s.rowid DESC LIMIT 1) AS slug
+    FROM altar_members m WHERE m.user_id = ? ORDER BY m.added_at, m.altar_id`, userId);
+
+// ---------- vanity names ----------
+export const currentSlug = async (db, altarId) =>
+  (await one(db, 'SELECT slug FROM altar_slugs WHERE altar_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', altarId))?.slug ?? null;
+export const altarIdForSlug = async (db, slug) => (await one(db, 'SELECT altar_id FROM altar_slugs WHERE slug = ?', slug))?.altar_id ?? null;
+
+// Makes `slug` this altar's current name. Returns 'ok', 'taken' (someone else's, now or before) or 'limit'.
+// One of its own earlier names can be taken back. The primary key makes two simultaneous claims safe.
+export async function setSlug(db, { altarId, slug, now, max }) {
+  const owner = await altarIdForSlug(db, slug);
+  if (owner && owner !== altarId) return 'taken';
+  if (owner) { await run(db, 'UPDATE altar_slugs SET created_at = ? WHERE slug = ?', now, slug); return 'ok'; }
+  const have = await one(db, 'SELECT COUNT(*) AS n FROM altar_slugs WHERE altar_id = ?', altarId);
+  if (Number(have.n) >= max) return 'limit';
+  try { await run(db, 'INSERT INTO altar_slugs (slug, altar_id, created_at) VALUES (?, ?, ?)', slug, altarId, now); }
+  catch (e) { if (/unique|constraint/i.test(String(e?.message))) return 'taken'; throw e; }
+  return 'ok';
+}
 
 // Upgrades bought for this altar, plus everything if its owner has the platinum plan.
 export async function getEntitlements(db, altarId, names) {

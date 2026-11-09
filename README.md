@@ -117,7 +117,13 @@ Setup you do once:
 
 **Privacy policy and terms** are `site/privacy.html` and `site/terms.html`, linked from every page. They describe what this code actually does, but they are a draft: put your contact address where they say `[your contact email]`, and have them read by someone who can advise on your jurisdiction (governing law, refund policy and children's data rules are not covered). If you change what is stored or who processes it, change the policy too.
 
-Not built: custom names, and Stripe automatic tax (a decision, not code). Email addresses are stored in plain text because they have to be emailed.
+**Vanity names.** The owner can give an ofrenda a name in its address, so `/a/abuela-rosa` opens the same ofrenda as `/a/<id>`. On the Keepers page, under "A name in the address".
+- `PUT /ofrendas/:id/slug {slug}` (owner only) and the public `GET /ofrendas/by-name/:name` -> `{id, slug}`. A name is 3 to 40 lower-case letters and digits with single hyphens (it is trimmed and lower-cased), and can never look like a real id (12 characters of a-z and 2-7), so `/a/<x>` is never ambiguous.
+- The id link keeps working. Every name an ofrenda has had is kept and still opens it, so links already shared never break and nobody else can take a name over after the owner moves on; one ofrenda can use at most 5 names in its life (`RULES.slugsPerAltar`), and an owner can take an old one back. Deleting the ofrenda or the account frees its names. A handover keeps them, and the new owner can rename.
+- Names are free, and on purpose not a paid upgrade. **A name makes an ofrenda easy to guess**, so the page says so, and the privacy page does too. Nothing filters offensive or impersonating names: if you want that, add a blocklist in `normalizeSlug` (`server/util.mjs`).
+- Needs migration `0003`. The `/ofrendas/*` Worker route already covers it.
+
+Not built: Stripe automatic tax (a decision, not code). Email addresses are stored in plain text because they have to be emailed.
 
 ### The website (`site/`)
 

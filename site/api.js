@@ -34,3 +34,16 @@ export function describe(e, fallback = 'Something went wrong. Please try again.'
   if (e && e.status === 429) return 'Too many tries. Please wait a little and try again.';
   return (e && e.body && e.body.message) || fallback;
 }
+
+// A page address like /a/xyz can hold an ofrenda's id or its vanity name. Returns the id, or null.
+// Ids are exactly 12 characters of a-z and 2-7, and names can never look like that, so there is no overlap.
+export async function resolveRef(ref) {
+  if (typeof ref !== 'string') return null;
+  if (/^[a-z2-7]{12}$/.test(ref) || /^[A-Za-z0-9_-]{1,64}$/.test(ref) && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(ref)) return ref;
+  try {
+    const res = await fetch('/ofrendas/by-name/' + encodeURIComponent(ref), { cache: 'no-store' });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return typeof body.id === 'string' ? body.id : null;
+  } catch { return null; }
+}

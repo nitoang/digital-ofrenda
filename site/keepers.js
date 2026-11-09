@@ -1,9 +1,14 @@
-import { api, getMe, describe } from './api.js';
+import { api, getMe, describe, resolveRef } from './api.js';
 import { h, mount, frame, messages, link, date, twoClick, busy } from './ui.js';
 
 const root = document.getElementById('app');
-const id = (/^\/a\/([A-Za-z0-9_-]{1,64})\/keepers\/?$/.exec(location.pathname) || [])[1];
+const ref = (/^\/a\/([A-Za-z0-9_-]{1,64})\/keepers\/?$/.exec(location.pathname) || [])[1];
+let id = null;
 
+const NAME_ERRORS = {
+  bad_name: 'Use 3 to 40 letters, numbers and single hyphens, like abuela-rosa.',
+  name_taken: 'That name is already used. Try another.',
+};
 const INVITE_ERRORS = {
   already_member: 'That person already keeps this ofrenda.',
   already_invited: 'That person already has an invitation waiting.',
@@ -17,11 +22,12 @@ const SUCCESSOR_ERRORS = {
 };
 
 async function render(note) {
+  id = id || await resolveRef(ref);
   if (!id) { mount(root, frame(null, h('h1', {}, 'Not found'))); return; }
   let me, team;
   try {
     me = await getMe();
-    if (!me) { location.replace(`/signin?next=/a/${id}/keepers`); return; }
+    if (!me) { location.replace(`/signin?next=/a/${ref}/keepers`); return; }
     team = await api('GET', `/ofrendas/${id}/team`);
   } catch (e) {
     mount(root, frame(me || null, h('h1', {}, 'Keepers'), h('p', { class: 'msg error', role: 'alert' },
@@ -57,7 +63,7 @@ async function render(note) {
 
   mount(root, frame(me,
     h('h1', {}, 'Keepers'),
-    h('p', {}, link('← Back to the ofrenda', `/a/${id}`)),
+    h('p', {}, link('← Back to the ofrenda', `/a/${ref}`)),
     msg.el, sections));
 }
 
@@ -87,7 +93,19 @@ function ownerSections(team, msg, run) {
     h('p', {}, h('strong', {}, 'Your successor asked to take over this ofrenda.'), ` Ownership moves to them on ${date(team.claim.executesAt)}. Signing in again before then stops it, and so does the button below.`),
     h('p', {}, twoClick('Stop this request', 'Click again to stop it', () => run(() => api('DELETE', `/ofrendas/${id}/claim`), 'Stopped.')))) : null;
 
+  const nameInput = h('input', { id: 'vanity-name', type: 'text', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', required: true, 'aria-describedby': 'vanity-help' });
+  const nameSave = h('button', { type: 'submit' }, team.slug ? 'Change name' : 'Choose a name');
+  const nameForm = h('form', { novalidate: true, class: 'row' }, h('label', { for: 'vanity-name' }, 'Name'), nameInput, nameSave);
+  nameForm.addEventListener('submit', ev => {
+    ev.preventDefault();
+    busy(nameSave, () => run(() => api('PUT', `/ofrendas/${id}/slug`, { slug: nameInput.value }), 'Saved. The link below now uses the new name.', NAME_ERRORS));
+  });
+
   return [
+    h('h2', {}, 'A name in the address'),
+    h('p', { id: 'vanity-help', class: 'muted' }, 'Give this ofrenda an easy address like ', h('strong', {}, location.origin + '/a/abuela-rosa'), '. Letters, numbers and hyphens, 3 to 40 characters. The original link keeps working, and so do earlier names, so links you already shared never break. Anyone who guesses a name can view the ofrenda, so choose one only if you are happy for it to be easy to find.'),
+    team.slug ? h('p', {}, 'Current name: ', link(location.origin + '/a/' + team.slug, '/a/' + team.slug)) : null,
+    nameForm,
     h('h2', {}, 'Invite a co-keeper'),
     h('p', { class: 'muted' }, 'Co-keepers can add to the ofrenda and change it. They cannot delete it or change who keeps it.'),
     inviteForm, pending,

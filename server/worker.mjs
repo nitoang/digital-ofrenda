@@ -22,6 +22,8 @@
 //   POST /me/email {email} | POST /me/email/confirm {code} change my email, proved with a code sent to the new one
 //   POST /ofrendas                                         create one (free accounts: RULES.freeAltars)
 //   GET  /ofrendas/:id                                     public view
+//   GET  /ofrendas/by-name/:name                           which ofrenda a vanity name points to -> {id, slug}
+//   PUT  /ofrendas/:id/slug {slug}                         the owner picks a vanity name (/a/abuela-rosa)
 //   PUT  /ofrendas/:id | DELETE /ofrendas/:id              save (limits enforced) | delete (owner)
 //   GET  /ofrendas/:id/team                                members; the owner also sees invites, successor, claim
 //   POST /ofrendas/:id/invites {email} | DELETE /ofrendas/:id/invites/:inviteId
@@ -64,6 +66,7 @@ const ROUTES = [
   ['POST', /^\/ofrendas$/, altars.handleCreate],
   ['PUT', new RegExp(`^/ofrendas/${ID}$`), altars.handleSave],
   ['DELETE', new RegExp(`^/ofrendas/${ID}$`), altars.handleDelete],
+  ['PUT', new RegExp(`^/ofrendas/${ID}/slug$`), altars.handleSetSlug],
   ['GET', new RegExp(`^/ofrendas/${ID}/team$`), team.handleTeam],
   ['POST', new RegExp(`^/ofrendas/${ID}/invites$`), team.handleInvite],
   ['DELETE', new RegExp(`^/ofrendas/${ID}/invites/${ID}$`), team.handleRevokeInvite],
@@ -77,6 +80,7 @@ const ROUTES = [
   ['POST', new RegExp(`^/ofrendas/${ID}/claim/complete$`), team.handleCompleteClaim],
 ];
 const PUBLIC_GET = new RegExp(`^/ofrendas/${ID}$`);
+const BY_NAME = /^\/ofrendas\/by-name\/([a-z0-9-]{1,64})$/;
 
 const misconfigured = what => { console.error('digital-ofrenda worker is missing configuration: ' + what); return json({ error: 'misconfigured' }, 500); };
 const appUrlOk = env => /^(https:\/\/[a-z0-9.-]+(:\d+)?|http:\/\/localhost(:\d+)?)$/i.test(env.APP_URL || '');
@@ -94,6 +98,8 @@ async function route(request, env, deps) {
   const method = request.method;
 
   if (pathname === '/stripe/webhook' && method === 'POST') return env.DB ? handleStripe(request, env, deps) : misconfigured('DB');
+
+  if (method === 'GET' && BY_NAME.test(pathname)) return env.DB ? altars.handleByName(env, BY_NAME.exec(pathname)[1]) : misconfigured('DB');
 
   if (method === 'GET' && PUBLIC_GET.test(pathname)) {
     return env.DB ? altars.handleGet(env, PUBLIC_GET.exec(pathname)[1]) : misconfigured('DB');

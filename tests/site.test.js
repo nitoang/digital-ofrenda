@@ -502,3 +502,37 @@ withSite('legal pages: privacy and terms are public, linked from every page, and
   assert.ok((await page.locator('main').innerText()).includes('refunded in full'));
   await assertLabelled(page);
 });
+
+withSite('names: the owner picks a name and /a/<name> opens the same ofrenda, with the id link still working', async () => {
+  const { page } = await visitor();
+  await signIn(page, 'maria@example.com');
+  const id = await startOfrenda(page);
+  await page.goto(site.url + `/a/${id}/keepers`);
+  await page.getByLabel('Name', { exact: true }).fill('Abuela_Rosa');
+  await page.getByRole('button', { name: 'Choose a name' }).click();
+  await page.getByText('Use 3 to 40 letters').waitFor();
+  await page.getByLabel('Name', { exact: true }).fill('abuela-rosa');
+  await page.getByRole('button', { name: 'Choose a name' }).click();
+  await page.getByText('Current name:').waitFor();
+  await assertLabelled(page);
+
+  // Through the name, the page is still the editor for its owner, and sharing uses the name.
+  await page.goto(site.url + '/a/abuela-rosa');
+  await page.locator('digital-ofrenda').waitFor();
+  assert.equal(await page.locator('#share-url').inputValue(), site.url + '/a/abuela-rosa');
+  await page.getByRole('link', { name: 'Keepers and sharing' }).click();
+  await page.waitForURL(u => u.pathname === '/a/abuela-rosa/keepers');
+  await page.getByText('Current name:').waitFor();
+
+  // A visitor who is not signed in can view it by name or by id, and an unknown name is just not found.
+  const saved = await page.evaluate(([id, body]) => fetch('/ofrendas/' + id, { method: 'PUT', headers: { 'content-type': 'application/json' }, body }).then(r => r.status), [id, JSON.stringify(altar())]);
+  assert.equal(saved, 200);
+  const stranger = await visitor();
+  for (const p of ['/a/abuela-rosa', `/a/${id}`]) {
+    await stranger.page.goto(site.url + p);
+    await stranger.page.locator('digital-ofrenda').waitFor();
+    assert.equal(await stranger.page.getByRole('heading', { name: 'This ofrenda is not ready yet' }).count(), 0, p);
+  }
+  await stranger.page.goto(site.url + '/a/nobody-here');
+  await stranger.page.getByRole('heading', { name: 'Ofrenda not found' }).waitFor();
+});
