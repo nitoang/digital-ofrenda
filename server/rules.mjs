@@ -21,5 +21,8 @@ export const RULES = Object.freeze({
   emailChangeTtl: 15 * MINUTE,         // the code sent to a new address
   emailChangeAttempts: 5,
   emailChangesPerHour: 5,
+  handoverWait: 90 * DAY,              // how long a handover to someone without an account waits for them to sign up
+  handoversPerDay: 3,                  // handovers one account may start in a day
+  handoverWord: 'handover',            // typed to confirm a handover
   claimWait: 30 * DAY,                 // notice period; the owner signing in at any point cancels it
 });

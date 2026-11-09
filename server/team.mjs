@@ -18,7 +18,7 @@ import { RULES } from './rules.mjs';
 import { FEATURES } from './validate.mjs';
 
 // Signed in, and one of `roles` on this altar; otherwise a Response to send back.
-async function asRole(request, env, deps, id, roles) {
+export async function asRole(request, env, deps, id, roles) {
   const s = await requireUser(request, env, deps);
   if (isResponse(s)) return s;
   const role = await store.getRole(env.DB, id, s.user.id);
@@ -38,12 +38,14 @@ export async function handleTeam(request, env, deps, id) {
   const now = deps.now();
   const successor = await store.getSuccessor(env.DB, id);
   const claim = await store.getClaim(env.DB, id);
+  const handover = await store.getHandover(env.DB, id);
   return json({
     role: 'owner',
     members,
     entitlements,
     slug,
     invites: (await store.listInvites(env.DB, id, now)).map(i => ({ id: i.id, email: i.email, expiresAt: i.expires_at })),
+    handover: handover ? { email: handover.to_email, expiresAt: handover.expires_at } : null,
     successor: successor ? { email: successor.email, accepted: !!successor.accepted_user_id } : null,
     claim: claim && !claim.cancelled_at && !claim.completed_at ? { requestedAt: claim.requested_at, executesAt: claim.executes_at } : null,
   });
@@ -63,7 +65,7 @@ export function cleanNote(v) {
 }
 
 // The loved one's name as the owner typed it into the altar, made safe for a subject line.
-async function altarName(env, id) {
+export async function altarName(env, id) {
   try {
     const row = await store.getAltar(env.DB, id);
     const name = row?.state ? JSON.parse(row.state).name : '';

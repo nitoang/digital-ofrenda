@@ -166,6 +166,7 @@ export const passOn = (db, { altarId, fromUserId, heirIds, now, grants }) => db.
     ON CONFLICT (altar_id, user_id) DO UPDATE SET role = 'owner', via_successor = 0, added_at = excluded.added_at`, altarId, id, now)),
   stmt(db, 'DELETE FROM altar_members WHERE altar_id = ? AND user_id = ?', altarId, fromUserId),
   stmt(db, 'DELETE FROM successors WHERE altar_id = ?', altarId),
+  stmt(db, 'DELETE FROM handovers WHERE altar_id = ?', altarId),
   stmt(db, 'UPDATE claims SET cancelled_at = ? WHERE altar_id = ? AND cancelled_at IS NULL AND completed_at IS NULL', now, altarId),
   ...grants.map(name => stmt(db, 'INSERT OR IGNORE INTO features (altar_id, name, granted_at) VALUES (?, ?, ?)', altarId, name, now)),
 ]);
@@ -298,3 +299,27 @@ export const handOver = (db, { altarId, newOwnerId, now, grants }) => db.batch([
   stmt(db, 'DELETE FROM successors WHERE altar_id = ?', altarId),
   ...grants.map(name => stmt(db, 'INSERT OR IGNORE INTO features (altar_id, name, granted_at) VALUES (?, ?, ?)', altarId, name, now)),
 ]);
+
+
+// ---------- handovers ----------
+export const getHandover = (db, altarId) => one(db, 'SELECT altar_id, to_email, from_user_id, created_at, expires_at FROM handovers WHERE altar_id = ?', altarId);
+export async function countHandoversSince(db, userId, since) {
+  const r = await one(db, 'SELECT COUNT(*) AS n FROM handover_log WHERE user_id = ? AND at > ?', userId, since);
+  return Number(r.n);
+}
+// Makes `userId` an owner as well. The previous owner is untouched. Starts at the end of their list (added_at = now).
+export const addOwner = (db, { altarId, userId, now }) => run(db, `INSERT INTO altar_members (altar_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?)
+  ON CONFLICT (altar_id, user_id) DO UPDATE SET role = 'owner', via_successor = 0, added_at = excluded.added_at`, altarId, userId, now);
+export const logHandover = (db, { id, userId, now }) => run(db, 'INSERT INTO handover_log (id, user_id, at) VALUES (?, ?, ?)', id, userId, now);
+// False if one is already waiting on this ofrenda.
+export async function createHandover(db, { altarId, toEmail, fromUserId, now, expiresAt }) {
+  return (await run(db, 'INSERT OR IGNORE INTO handovers (altar_id, to_email, from_user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)', altarId, toEmail, fromUserId, now, expiresAt)).meta.changes > 0;
+}
+export const cancelHandover = async (db, altarId) => (await run(db, 'DELETE FROM handovers WHERE altar_id = ?', altarId)).meta.changes > 0;
+// A new person has just signed in for the first time: take the handovers waiting for their address (one use each).
+export const takeHandoversFor = (db, email, now) =>
+  all(db, 'DELETE FROM handovers WHERE to_email = ? AND expires_at > ? RETURNING altar_id, from_user_id', email, now);
+export async function countHandoversTo(db, email, now) {
+  const r = await one(db, 'SELECT COUNT(*) AS n FROM handovers WHERE to_email = ? AND expires_at > ?', email, now);
+  return Number(r.n);
+}

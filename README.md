@@ -90,6 +90,11 @@ await save(r.state);                                      // store the cleaned s
 - Limits: `RULES.sharesPerEmailPerDay` (3, per address across all ofrendas) and `RULES.sharesPerAltarPerDay` (20). To enforce them without keeping anyone's address, a view-only share is recorded as a one-way hash of the address for a day, then cleared (needs migration `0004`).
 - The emails are written in `server/mail.mjs` (`viewShareMessage`, `inviteMessage`). They name the sender by email address, since accounts have no display name yet, and the ofrenda by the name its owner gave it.
 
+**Handing an ofrenda over.** An owner can hand an ofrenda to anyone; the recipient becomes an owner and the giver stays one.
+- `POST /ofrendas/:id/handover {email, confirm: "handover"}` (owner only). The owner must type the word. If the recipient already has an account (a co-keeper or not) it happens at once -> 201 `{status: "done"}`. If not, it waits for their first sign-in with that address -> 201 `{status: "pending", expiresAt}` (`RULES.handoverWait`). `DELETE /ofrendas/:id/handover` cancels a waiting one. The owner's Keepers data (`GET .../team`) includes `handover`.
+- Errors: `confirm_required`, `bad_email`, `handover_pending` and `already_owner` (409), `recipient_at_limit` (409: a free account that owns 3 ofrendas must upgrade first; for a new address, when it would already have that many waiting), `too_many_handovers` (429, `RULES.handoversPerDay` a day).
+- What happens when a new person never signs up (reminders, then passing it to its most frequent signed-in visitor) comes with the scheduled reminders.
+
 **A successor.** The owner can name one person per altar to take over if they can no longer look after it. Naming someone grants nothing: they must sign in and agree first. Agreeing makes them a co-keeper (they can edit, not delete); removing or replacing the successor takes that access away again. A takeover then needs all of this:
 1. The owner has not been seen for a year (`RULES.inactiveAfter`, 365 days).
 2. The successor asks. The owner is emailed and has 30 days (`RULES.claimWait`) to stop it; **signing in at any time cancels it**, and the successor is told.

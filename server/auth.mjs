@@ -12,6 +12,7 @@
 // they requested, you'd be signed in to THEIR account; the page shows the email you were signed in as.
 
 import { json, readJson, isResponse, normalizeEmail, sha256Hex, newToken, newId, newCode, timingSafeEqual } from './util.mjs';
+import { applyWaitingHandovers } from './handover.mjs';
 import * as store from './store.mjs';
 import { queueMail, signInMessage, welcomeMessage, claimCancelledMessage } from './mail.mjs';
 import { starterState } from './starter.mjs';
@@ -112,7 +113,10 @@ async function startSession(env, deps, email) {
   const now = deps.now();
   const user = await store.findOrCreateUser(env.DB, { id: newId(), email, now });
   await noteActivity(env, deps, user.id);
-  if (user.created) await welcomeNewUser(env, deps, user, now);
+  if (user.created) {
+    await welcomeNewUser(env, deps, user, now);
+    try { await applyWaitingHandovers(env, deps, user); } catch (e) { console.error('handover not applied:', e?.message); } // never blocks signing in
+  }
   const token = newToken();
   await store.createSession(env.DB, { idHash: await sha256Hex(token), userId: user.id, now, ttl: RULES.sessionTtl });
   return json({ email: user.email, plan: user.plan ?? null }, 200, { 'set-cookie': cookie(token, Math.floor(RULES.sessionTtl / 1000)) });

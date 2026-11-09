@@ -33,6 +33,7 @@
 //   DELETE /ofrendas/:id/members/:userId                   owner removes a co-keeper, or a co-keeper leaves
 //   PUT /ofrendas/:id/successor {email} | DELETE /ofrendas/:id/successor
 //   POST /successor/accept {token}
+//   POST /ofrendas/:id/handover {email, confirm: "handover"} | DELETE /ofrendas/:id/handover   hand to someone (see handover.mjs); owner only
 //   POST /ofrendas/:id/claim | DELETE /ofrendas/:id/claim | POST /ofrendas/:id/claim/complete
 //   POST /checkout {feature, altarId?}                     -> {url}  start a purchase (see checkout.mjs)
 //   POST /stripe/webhook                                   unlocks upgrades after payment (see billing.mjs)
@@ -45,6 +46,7 @@ import { mailerFromEnv } from './mail.mjs';
 import * as auth from './auth.mjs';
 import * as altars from './altars.mjs';
 import * as team from './team.mjs';
+import * as handover from './handover.mjs';
 import * as account from './account.mjs';
 import { handleStripe } from './billing.mjs';
 import { handleCheckout } from './checkout.mjs';
@@ -78,6 +80,8 @@ const ROUTES = [
   ['PUT', new RegExp(`^/ofrendas/${ID}/successor$`), team.handleSetSuccessor],
   ['DELETE', new RegExp(`^/ofrendas/${ID}/successor$`), team.handleClearSuccessor],
   ['POST', /^\/successor\/accept$/, team.handleAcceptSuccessor],
+  ['POST', new RegExp(`^/ofrendas/${ID}/handover$`), handover.handleHandover],
+  ['DELETE', new RegExp(`^/ofrendas/${ID}/handover$`), handover.handleCancelHandover],
   ['POST', new RegExp(`^/ofrendas/${ID}/claim$`), team.handleClaim],
   ['DELETE', new RegExp(`^/ofrendas/${ID}/claim$`), team.handleCancelClaim],
   ['POST', new RegExp(`^/ofrendas/${ID}/claim/complete$`), team.handleCompleteClaim],

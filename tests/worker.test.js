@@ -1510,3 +1510,78 @@ test('multiple owners: platinum on any owner covers the ofrenda, and a takeover 
   const early = await heir.json('POST', `/ofrendas/${id}/claim`);
   assert.deepEqual([early.status, early.body.error], [403, 'owner_active'], 'one owner is still around');
 });
+
+// ---------- direct handover ----------
+test('handover: needs the typed word, and goes at once to an existing account, who becomes an owner beside the giver', async () => {
+  const t = await setup();
+  const giver = await t.signIn('giver@example.com'), friend = await t.signIn('friend@example.com');
+  const id = await t.altarFor(giver, altar(frame('a', png())));
+  const path = `/ofrendas/${id}/handover`;
+  assert.equal((await giver.json('POST', path, { email: friend.email })).body.error, 'confirm_required');
+  assert.equal((await giver.json('POST', path, { email: friend.email, confirm: 'nope' })).body.error, 'confirm_required');
+  assert.equal((await friend.json('POST', path, { email: giver.email, confirm: 'handover' })).status, 403, 'only an owner can hand over');
+  assert.equal((await giver.json('POST', path, { email: giver.email, confirm: 'handover' })).body.error, 'bad_email');
+  const r = await giver.json('POST', path, { email: friend.email, confirm: 'Handover' });
+  assert.deepEqual([r.status, r.body.status], [201, 'done']);
+  assert.deepEqual((await friend.json('GET', '/me')).body.altars.map(a => a.role), ['owner']);
+  assert.deepEqual((await giver.json('GET', '/me')).body.altars.map(a => a.role), ['owner'], 'the giver stays an owner');
+  assert.equal((await giver.json('POST', path, { email: friend.email, confirm: 'handover' })).body.error, 'already_owner');
+  assert.ok((await t.mailTo(friend.email)).some(m => /handed an ofrenda over/.test(m.subject)));
+});
+
+test('handover: a co-keeper can be handed an ofrenda, and a free account at the limit is blocked until they upgrade', async () => {
+  const t = await setup();
+  const giver = await t.signIn('giver@example.com'), keeper = await t.signIn('keeper@example.com');
+  const id = await t.altarFor(giver);
+  await giver.call('POST', `/ofrendas/${id}/invites`, { email: keeper.email });
+  await keeper.call('POST', '/invites/accept', { token: await t.tokenFrom(keeper.email, /#i=([\w-]{43})/) });
+  for (let i = 0; i < t.RULES.freeAltars; i++) await t.altarFor(keeper);
+  const blocked = await giver.json('POST', `/ofrendas/${id}/handover`, { email: keeper.email, confirm: 'handover' });
+  assert.deepEqual([blocked.status, blocked.body.error], [409, 'recipient_at_limit']);
+  assert.equal((await keeper.json('GET', '/me')).body.altars.find(a => a.id === id).role, 'keeper');
+  t.db.prepare("UPDATE users SET plan = 'platinum' WHERE id = ?").run(keeper.id);
+  assert.equal((await giver.json('POST', `/ofrendas/${id}/handover`, { email: keeper.email, confirm: 'handover' })).body.status, 'done');
+  assert.equal((await keeper.json('GET', '/me')).body.altars.find(a => a.id === id).role, 'owner');
+});
+
+test('handover: to a new person it waits, can be cancelled, and takes effect on their first sign-in', async () => {
+  const t = await setup({ env: { STARTER_OFRENDA: '1' } });
+  const giver = await t.signIn('giver@example.com');
+  const a = await t.altarFor(giver), b = await t.altarFor(giver);
+  const sent = await giver.json('POST', `/ofrendas/${a}/handover`, { email: 'New@Example.com', confirm: 'handover' });
+  assert.deepEqual([sent.status, sent.body.status], [201, 'pending']);
+  assert.equal(sent.body.expiresAt, t.now() + t.RULES.handoverWait);
+  assert.equal((await giver.json('POST', `/ofrendas/${a}/handover`, { email: 'other@example.com', confirm: 'handover' })).body.error, 'handover_pending');
+  assert.equal((await giver.json('GET', `/ofrendas/${a}/team`)).body.handover.email, 'new@example.com');
+  assert.ok((await t.mailTo('new@example.com')).some(m => /hand an ofrenda over/.test(m.subject)));
+  assert.equal((await giver.call('DELETE', `/ofrendas/${a}/handover`)).status, 200, 'cancelled before it was accepted');
+  assert.equal((await giver.call('DELETE', `/ofrendas/${a}/handover`)).status, 404);
+
+  await giver.call('POST', `/ofrendas/${a}/handover`, { email: 'new@example.com', confirm: 'handover' });
+  await giver.call('POST', `/ofrendas/${b}/handover`, { email: 'new@example.com', confirm: 'handover' });
+  await t.advance(DAY + 1000, [giver]); // the daily limit is tested separately
+  const starter = (await giver.json('GET', '/me')).body.altars.find(x => x.id !== a && x.id !== b).id;
+  const third = await giver.json('POST', `/ofrendas/${starter}/handover`, { email: 'new@example.com', confirm: 'handover' });
+  assert.equal(third.body.error, 'recipient_at_limit', 'they would be over the free limit with their starter ofrenda');
+  const fresh = await t.signIn('new@example.com');
+  const mine = (await fresh.json('GET', '/me')).body.altars;
+  assert.equal(mine.length, 3, 'the starter and the two handed over');
+  assert.deepEqual(mine.filter(x => x.role === 'owner').map(x => x.id).sort(), [a, b, mine.find(x => x.id !== a && x.id !== b).id].sort());
+  assert.ok(mine.every(x => !x.locked));
+  assert.equal((await giver.json('GET', `/ofrendas/${a}/team`)).body.handover, null);
+  assert.ok((await t.mailTo(giver.email)).some(m => /accepted your handover/.test(m.subject)));
+});
+
+test('handover: an account can start only a few a day', async () => {
+  const t = await setup();
+  const giver = await t.signIn('giver@example.com');
+  for (let i = 0; i < t.RULES.handoversPerDay; i++) {
+    const id = await t.altarFor(giver);
+    assert.equal((await giver.json('POST', `/ofrendas/${id}/handover`, { email: `p${i}@example.com`, confirm: 'handover' })).status, 201);
+    await giver.call('DELETE', `/ofrendas/${id}/handover`);
+  }
+  const target = (await giver.json('GET', '/me')).body.altars[0].id;
+  assert.equal((await giver.json('POST', `/ofrendas/${target}/handover`, { email: 'late@example.com', confirm: 'handover' })).body.error, 'too_many_handovers');
+  t.tick(DAY + 1000);
+  assert.equal((await giver.call('GET', '/me')).status, 200);
+});
