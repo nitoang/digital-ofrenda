@@ -24,7 +24,7 @@ export const mailerFromEnv = env =>
 // Send after the response goes out, and never let a mail failure break the request.
 export const queueMail = (deps, work) => deps.defer(Promise.resolve().then(work).catch(e => console.error('email not sent:', e?.message)));
 
-const sign = '\n\n— digital-ofrenda\nIf you did not expect this email, you can ignore it.';
+const signoff = '\n\nDigifrenda 🧡';
 
 // The person chose how to sign in, so each email carries one thing: a link (a button on the page) or a 6-digit code.
 // The code goes in the subject so it shows up in a notification.
@@ -71,37 +71,37 @@ export const viewShareMessage = ({ to, from, link, name = '', note = '' }) => ({
 export const successorAskMessage = ({ to, from, link }) => ({
   to,
   subject: `${from} asked you to be the successor of an ofrenda`,
-  text: `${from} would like you to look after an ofrenda if they are no longer able to. Nothing changes unless that happens: you get no access now, and you are only ever asked to take over after a long silence and a notice period.\n\nTo agree, sign in with this email address:\n${link}${sign}`,
+  text: `${from} asked you to look after their ofrenda, in the event they are unable to.\n\nIf you say yes, you can add to the ofrenda right away, as a co-keeper. You can't delete it. You could only ask to take it over if ${from} hasn't been on Digifrenda for about a year, and even then they'd be emailed first and would have 30 days to stop it just by signing in.\n\nIf you're willing, sign in with this email address to say yes:\n${link}\n\nDidn't expect this? Ignore it and nothing happens.${signoff}`,
 });
 
 export const claimNoticeMessage = ({ to, from, executesAt }) => ({
   to,
   subject: 'Someone asked to take over your ofrenda',
-  text: `${from} asked to take over an ofrenda you keep, because you have not signed in for a long time.\n\nIf you do nothing, ownership moves to them on ${day(executesAt)}. You stay on as a co-keeper. To stop it, just sign in at any time before then.${sign}`,
+  text: `${from} asked to take over an ofrenda you keep, because we haven't seen you sign in for a long time.\n\nIf you do nothing, ownership moves to them on ${day(executesAt)}. You'd stay on as a co-keeper.\n\nTo stop it, just sign in any time before then. That's all it takes.${signoff}`,
 });
 
 export const claimCancelledMessage = ({ to }) => ({
   to,
   subject: 'The owner is back: your request was cancelled',
-  text: `The owner of the ofrenda you asked to take over signed in again, so your request was cancelled. You are still its successor, and you can ask again if they go quiet again.${sign}`,
+  text: `The owner of the ofrenda you asked to take over signed in again, so your request was cancelled. That's good news.\n\nYou're still their successor. If they go quiet again, you can ask again.${signoff}`,
 });
 
 export const handoverMessage = ({ to, role }) => ({
   to,
   subject: role === 'owner' ? 'You now keep an ofrenda' : 'An ofrenda you kept has a new owner',
   text: role === 'owner'
-    ? `The handover finished: you are now the owner of the ofrenda you agreed to look after.${sign}`
-    : `Ownership of an ofrenda you kept moved to its successor. You are still a co-keeper and can keep editing.${sign}`,
+    ? `The handover is done. You're now the owner of the ofrenda you agreed to look after. Thank you for carrying it.${signoff}`
+    : `Ownership of an ofrenda you kept has moved to its successor. You're still a co-keeper and can keep adding to it.${signoff}`,
 });
 
 export const emailChangeCodeMessage = ({ to, code }) => ({
   to,
   subject: `Your code to confirm this email address is ${code}`,
-  text: `Someone signed in to a Digital Ofrenda account asked to use this email address for it.\n\nTo confirm, enter this code on the page where you asked: ${code}\n\nIt works once and expires in 15 minutes. If this was not you, ignore this email and nothing will change.${sign}`,
+  text: `Someone signed in to a Digifrenda account asked to use this email address.\n\nTo confirm, enter this code on the page where you asked: ${code}\n\nIt works once and expires in 15 minutes. If this wasn't you, ignore this email and nothing will change.${signoff}`,
 });
 
 export const emailChangedNoticeMessage = ({ to, newEmail }) => ({
   to,
-  subject: 'The email address on your Digital Ofrenda account was changed',
-  text: `The email address on your account was changed to ${newEmail}, and every other device was signed out.\n\nIf you did this, there is nothing more to do. If you did not, someone else had access to your account: this address no longer signs in to it.${sign}`,
+  subject: 'The email address on your Digifrenda account was changed',
+  text: `The email address on your account was changed to ${newEmail}, and every other device was signed out.\n\nIf that was you, there's nothing more to do. If it wasn't, someone else had access to your account, and this address no longer signs in to it.${signoff}`,
 });

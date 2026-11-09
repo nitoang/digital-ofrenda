@@ -136,7 +136,7 @@ function ownerSections(team, msg, run) {
     h('p', { class: 'muted' }, 'Anyone who has the link can view this ofrenda, so a person you share it with can pass the link on. Only people you invite to view and edit can change it. They become co-keepers: they cannot delete the ofrenda or change who keeps it, and they must sign in with the email address you enter.'),
     shareForm, pending,
     h('h2', {}, 'Successor'),
-    h('p', { class: 'muted' }, 'If you can no longer look after this ofrenda, your successor can take it over. They get no access now, and can only ask after you have been away for about six months. You are told first and can stop it by signing in.'),
+    h('p', { class: 'muted' }, 'If you can no longer look after this ofrenda, your successor can take it over. Once they agree they can add to the ofrenda as a co-keeper, but they cannot delete it. They can only ask to take it over after you have been away for about a year. You are told first, and can stop it by signing in.'),
     status, claim, sForm,
     team.successor ? h('p', {}, twoClick('Remove successor', 'Click again to remove', () => run(() => api('DELETE', `/ofrendas/${id}/successor`), 'Successor removed.'))) : null,
     h('h2', {}, 'Delete this ofrenda'),

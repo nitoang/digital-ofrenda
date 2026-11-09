@@ -622,13 +622,17 @@ test('successor: naming someone grants nothing until they agree, and agreement i
   assert.equal((await heir.call('POST', '/successor/accept', { token: 'garbage' })).status, 400);
   assert.deepEqual((await heir.json('POST', '/successor/accept', { token })).body, { id });
   assert.equal((await heir.call('POST', '/successor/accept', { token })).status, 400, 'single use');
-  assert.equal((await heir.call('PUT', `/ofrendas/${id}`, altar())).status, 403, 'still no access after agreeing');
+  // Agreeing makes them a co-keeper straight away: they can add to the ofrenda, but not delete it or change who keeps it.
+  assert.equal((await heir.call('PUT', `/ofrendas/${id}`, altar())).status, 200, 'agreeing gives edit access');
+  assert.equal((await heir.call('DELETE', `/ofrendas/${id}`)).status, 403, 'but not delete');
+  assert.equal((await heir.call('PUT', `/ofrendas/${id}/successor`, { email: 'x@example.com' })).status, 403);
   assert.deepEqual((await heir.json('GET', '/me')).body.successorOf, [{ id, claim: null }]);
   assert.equal((await owner.json('GET', `/ofrendas/${id}/team`)).body.successor.accepted, true);
 
   t.tick(HOUR + 1); // replacing the successor starts over: the old agreement is gone
   assert.equal((await owner.call('PUT', url, { email: 'new@example.com' })).status, 200);
   assert.equal((await heir.call('POST', `/ofrendas/${id}/claim`)).status, 403);
+  assert.equal((await heir.call('PUT', `/ofrendas/${id}`, altar())).status, 403, 'replacing the successor ends their access');
   assert.equal((await owner.call('DELETE', url)).status, 200);
   assert.equal(await t.store.getSuccessor(t.env.DB, id), null);
 });
@@ -1387,4 +1391,28 @@ test('sign-in: the person chooses a link or a code, and only that one is emailed
   const bad = await t.call('POST', '/auth/start', { body: { method: 'code', email: 'x@example.com', method: 'carrier-pigeon' } });
   assert.equal(bad.status, 400);
   assert.equal((await t.mailTo('x@example.com')).length, 0);
+});
+
+test('successor access: removing the successor ends it, but a separately invited co-keeper keeps theirs', async () => {
+  const t = await setup();
+  const owner = await t.signIn('owner@example.com');
+  const id = await t.altarFor(owner, altar());
+  // Invited as a co-keeper first, then also named successor.
+  const inv = await owner.call('POST', `/ofrendas/${id}/invites`, { email: 'both@example.com' });
+  assert.equal(inv.status, 201);
+  const both = await t.signIn('both@example.com');
+  const itoken = await t.tokenFrom('both@example.com', /\/invite#i=([\w-]{43})/);
+  assert.equal((await both.call('POST', '/invites/accept', { token: itoken })).status, 200);
+  assert.equal((await owner.call('PUT', `/ofrendas/${id}/successor`, { email: 'both@example.com' })).status, 200);
+  const stoken = await t.tokenFrom('both@example.com', /\/successor#s=([\w-]{43})/);
+  assert.equal((await both.call('POST', '/successor/accept', { token: stoken })).status, 200);
+  assert.equal((await owner.call('DELETE', `/ofrendas/${id}/successor`)).status, 200);
+  assert.equal((await both.call('PUT', `/ofrendas/${id}`, altar())).status, 200, 'their own invitation still stands');
+  // And a successor who becomes owner is no longer marked as a successor-only keeper.
+  assert.equal(t.db.prepare("SELECT via_successor v FROM altar_members WHERE user_id = ?").get(both.id).v, 0);
+});
+
+test('a year of silence is the rule', async () => {
+  const { RULES } = await import('../server/rules.mjs');
+  assert.equal(RULES.inactiveAfter, 365 * DAY);
 });

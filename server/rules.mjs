@@ -16,7 +16,7 @@ export const RULES = Object.freeze({
   sharesPerAltarPerDay: 20,            // view-only links one altar may email in a day
   starterName: 'My Ofrenda',           // what a new account's first ofrenda is called (when STARTER_OFRENDA is on)
   noteMax: 280,                        // characters in the optional note that goes with a shared link
-  inactiveAfter: 180 * DAY,            // owner silence before a successor may start a takeover request
+  inactiveAfter: 365 * DAY,            // owner silence before a successor may start a takeover request
   slugsPerAltar: 5,                    // names one ofrenda may have used, including the current one
   emailChangeTtl: 15 * MINUTE,         // the code sent to a new address
   emailChangeAttempts: 5,
