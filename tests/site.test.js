@@ -516,7 +516,7 @@ withSite('account: deleting asks for the email, warns about owned ofrendas, then
   await page.getByText('Type your email address exactly').waitFor();
   await page.getByLabel(/To confirm, type your email/).fill('maria@example.com');
   await page.getByRole('button', { name: 'Delete my account' }).click();
-  await page.getByText(/You own 1 ofrenda/).waitFor();
+  await page.getByText(/One of your ofrendas has nobody else to keep it/).waitFor();
   assert.equal(site.db.prepare('SELECT COUNT(*) n FROM users').get().n, 1, 'nothing deleted yet');
   await page.getByLabel('Yes, delete my ofrendas too').check();
   await page.getByRole('button', { name: 'Delete my account' }).click();
