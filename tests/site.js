@@ -11,7 +11,7 @@ const ROOT = path.resolve(__dirname, '..');
 const SITE = path.join(ROOT, 'site');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 
-const isApi = p => p === '/me' || p === '/checkout' || p === '/ofrendas' || /^\/(auth|ofrendas|invites|successor|stripe)\//.test(p);
+const isApi = p => p === '/me' || p === '/checkout' || p === '/ofrendas' || /^\/(auth|me|ofrendas|invites|successor|stripe)\//.test(p);
 
 // Cloudflare Pages _headers: indented "Name: value" lines under a path line. Only "/*" is used here.
 function readHeaders() {

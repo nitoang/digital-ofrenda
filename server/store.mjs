@@ -19,6 +19,63 @@ export const touchUser = (db, id, now) => run(db, 'UPDATE users SET last_seen_at
 export async function setPlan(db, id, plan) {
   return (await run(db, 'UPDATE users SET plan = ? WHERE id = ?', plan, id)).meta.changes > 0;
 }
+export const clearPlan = (db, id) => run(db, "UPDATE users SET plan = NULL WHERE id = ? AND plan = 'platinum'", id);
+
+// Everything about a person goes in one transaction: their sessions, memberships, invitations they sent,
+// successor and takeover rows (all by cascade), the sign-in records and invitations addressed to their email,
+// and, only if asked, the ofrendas they own. Payment records hold no personal data and stay.
+export const deleteAccount = (db, { userId, email, withOfrendas }) => db.batch([
+  ...(withOfrendas ? [stmt(db, "DELETE FROM altars WHERE id IN (SELECT altar_id FROM altar_members WHERE user_id = ? AND role = 'owner')", userId)] : []),
+  stmt(db, 'DELETE FROM login_challenges WHERE email = ?', email),
+  stmt(db, 'DELETE FROM invites WHERE email = ?', email),
+  stmt(db, 'DELETE FROM successors WHERE email = ?', email),
+  stmt(db, 'DELETE FROM users WHERE id = ?', userId),
+]);
+export const ownedAltarSummary = async (db, userId) => {
+  const r = await one(db, `SELECT COUNT(*) AS n, COALESCE(SUM((SELECT COUNT(*) FROM altar_members o WHERE o.altar_id = m.altar_id AND o.user_id != m.user_id)), 0) AS others
+    FROM altar_members m WHERE m.user_id = ? AND m.role = 'owner'`, userId);
+  return { owned: Number(r.n), withOthers: Number(r.others) };
+};
+
+// ---------- changing an email address ----------
+// Starts (or restarts) a change. False when this person has asked too often this hour.
+export async function startEmailChange(db, { userId, newEmail, codeHash, now, ttl, maxPerHour }) {
+  const r = await run(db, `INSERT INTO email_changes (user_id, new_email, code_hash, created_at, expires_at, window_start)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (user_id) DO UPDATE SET new_email = excluded.new_email, code_hash = excluded.code_hash, created_at = excluded.created_at,
+      expires_at = excluded.expires_at, attempts = 0,
+      sends = CASE WHEN excluded.created_at - email_changes.window_start < 3600000 THEN email_changes.sends + 1 ELSE 1 END,
+      window_start = CASE WHEN excluded.created_at - email_changes.window_start < 3600000 THEN email_changes.window_start ELSE excluded.created_at END
+    WHERE excluded.created_at - email_changes.window_start >= 3600000 OR email_changes.sends < ?`,
+    userId, newEmail, codeHash, now, now + ttl, now, maxPerHour);
+  return r.meta.changes > 0;
+}
+// Every guess counts, right or wrong.
+export const countEmailChangeAttempt = (db, { userId, now, maxAttempts }) =>
+  one(db, 'UPDATE email_changes SET attempts = attempts + 1 WHERE user_id = ? AND expires_at > ? AND attempts < ? RETURNING new_email, code_hash', userId, now, maxAttempts);
+export const getPendingEmailChange = (db, userId, now) =>
+  one(db, 'SELECT new_email, expires_at FROM email_changes WHERE user_id = ? AND expires_at > ?', userId, now);
+export const cancelEmailChange = (db, userId) => run(db, 'DELETE FROM email_changes WHERE user_id = ?', userId);
+
+// Switches the address and signs out every other device, in one transaction. The UNIQUE column makes this
+// fail if somebody else already has the new address.
+export const applyEmailChange = (db, { userId, newEmail, keepSession }) => db.batch([
+  stmt(db, 'UPDATE users SET email = ? WHERE id = ?', newEmail, userId),
+  stmt(db, 'DELETE FROM email_changes WHERE user_id = ?', userId),
+  stmt(db, 'DELETE FROM sessions WHERE user_id = ? AND id_hash != ?', userId, keepSession),
+]);
+
+// ---------- purchases and refunds ----------
+export const recordPurchase = (db, { paymentIntent, feature, reference, now }) =>
+  run(db, 'INSERT OR IGNORE INTO purchases (payment_intent, feature, reference, paid_at) VALUES (?, ?, ?, ?)', paymentIntent, feature, reference, now);
+export const getPurchase = (db, paymentIntent) => one(db, 'SELECT feature, reference, refunded_at FROM purchases WHERE payment_intent = ?', paymentIntent);
+export const markRefunded = (db, paymentIntent, now) =>
+  run(db, 'UPDATE purchases SET refunded_at = ? WHERE payment_intent = ? AND refunded_at IS NULL', now, paymentIntent);
+export async function countUnrefunded(db, feature, reference) {
+  const r = await one(db, 'SELECT COUNT(*) AS n FROM purchases WHERE feature = ? AND reference = ? AND refunded_at IS NULL', feature, reference);
+  return r ? Number(r.n) : 0;
+}
+export const removeFeature = (db, altarId, name) => run(db, 'DELETE FROM features WHERE altar_id = ? AND name = ?', altarId, name);
 
 // ---------- sign-in ----------
 export const addLoginChallenge = (db, { challenge, linkHash, codeHash, email, now, ttl }) =>
@@ -40,6 +97,14 @@ export const countLoginAttempt = (db, { challenge, now, maxAttempts }) =>
 
 export const useLoginChallenge = (db, { challenge, now }) =>
   one(db, 'UPDATE login_challenges SET used_at = ? WHERE challenge_id = ? AND used_at IS NULL RETURNING email', now, challenge);
+
+// Expired sign-in records are of no use to anyone, so each new sign-in request tidies up behind itself.
+// Used ones are kept a day for the per-address rate limit, which only looks back an hour.
+export const purgeExpired = (db, now) => db.batch([
+  stmt(db, 'DELETE FROM login_challenges WHERE expires_at < ? AND created_at < ?', now - 86_400_000, now - 86_400_000),
+  stmt(db, 'DELETE FROM sessions WHERE expires_at < ?', now),
+  stmt(db, 'DELETE FROM email_changes WHERE expires_at < ?', now - 86_400_000),
+]);
 
 // ---------- sessions ----------
 export const createSession = (db, { idHash, userId, now, ttl }) =>

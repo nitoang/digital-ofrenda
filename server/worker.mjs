@@ -18,6 +18,8 @@
 //   POST /auth/code {challenge, code}                      the code; sets the session cookie
 //   POST /auth/logout, POST /auth/logout-all
 //   GET  /me                                               who I am, my altars, takeovers I could start
+//   DELETE /me {email, deleteOfrendas?}                    delete my account (see account.mjs)
+//   POST /me/email {email} | POST /me/email/confirm {code} change my email, proved with a code sent to the new one
 //   POST /ofrendas                                         create one (free accounts: RULES.freeAltars)
 //   GET  /ofrendas/:id                                     public view
 //   PUT  /ofrendas/:id | DELETE /ofrendas/:id              save (limits enforced) | delete (owner)
@@ -39,6 +41,7 @@ import { mailerFromEnv } from './mail.mjs';
 import * as auth from './auth.mjs';
 import * as altars from './altars.mjs';
 import * as team from './team.mjs';
+import * as account from './account.mjs';
 import { handleStripe } from './billing.mjs';
 import { handleCheckout } from './checkout.mjs';
 
@@ -54,6 +57,9 @@ const ROUTES = [
   ['POST', /^\/auth\/logout$/, auth.handleLogout],
   ['POST', /^\/auth\/logout-all$/, auth.handleLogoutEverywhere],
   ['GET', /^\/me$/, altars.handleMe],
+  ['DELETE', /^\/me$/, account.handleDeleteAccount],
+  ['POST', /^\/me\/email$/, account.handleStartEmailChange],
+  ['POST', /^\/me\/email\/confirm$/, account.handleConfirmEmailChange],
   ['POST', /^\/checkout$/, handleCheckout],
   ['POST', /^\/ofrendas$/, altars.handleCreate],
   ['PUT', new RegExp(`^/ofrendas/${ID}$`), altars.handleSave],

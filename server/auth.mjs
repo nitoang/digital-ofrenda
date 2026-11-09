@@ -69,6 +69,7 @@ export async function handleStart(request, env, deps) {
   if (!(await turnstileOk(request, env, deps, body.turnstile))) return json({ error: 'turnstile_failed' }, 403);
 
   const now = deps.now();
+  await store.purgeExpired(env.DB, now);
   const challenge = newToken();
   // Over the limit we answer exactly the same way but send nothing, so the limit itself leaks nothing either.
   if ((await store.countLoginChallengesSince(env.DB, email, now - 3_600_000)) < RULES.loginsPerEmailPerHour) {

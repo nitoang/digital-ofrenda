@@ -444,3 +444,61 @@ withShop('the page itself only follows an address on Stripe, even if told otherw
   assert.equal(new URL(page.url()).origin, site.url, 'it did not go anywhere');
   await ctx.close();
 });
+
+// ---------- account: email, deletion, and the legal pages ----------
+
+withSite('account: changing the email address needs the code sent to the new one', async () => {
+  const { page } = await visitor();
+  await signIn(page, 'maria@example.com');
+  await page.goto(site.url + '/my');
+  await page.getByLabel('New email address').fill('maria.new@example.com');
+  const from = site.sent.length;
+  await page.getByRole('button', { name: 'Email me a code' }).click();
+  const code = await site.codeFor('maria.new@example.com', from);
+  await page.getByLabel('Code', { exact: true }).fill('000000');
+  await page.getByRole('button', { name: 'Change my email' }).click();
+  await page.getByText('That code did not work').waitFor();
+  await page.getByLabel('Code', { exact: true }).fill(code);
+  await page.getByRole('button', { name: 'Change my email' }).click();
+  await page.getByText('Your email address is now maria.new@example.com').waitFor();
+  assert.equal(await page.locator('.who').innerText(), 'maria.new@example.com', 'the header shows the new address');
+  await site.mail('maria@example.com', /changed/);
+  await assertLabelled(page);
+});
+
+withSite('account: deleting asks for the email, warns about owned ofrendas, then signs out for good', async () => {
+  const { page } = await visitor();
+  await signIn(page, 'maria@example.com');
+  const id = await startOfrenda(page);
+  await page.goto(site.url + '/my');
+  await page.getByLabel(/To confirm, type your email/).fill('wrong@example.com');
+  await page.getByRole('button', { name: 'Delete my account' }).click();
+  await page.getByText('Type your email address exactly').waitFor();
+  await page.getByLabel(/To confirm, type your email/).fill('maria@example.com');
+  await page.getByRole('button', { name: 'Delete my account' }).click();
+  await page.getByText(/You own 1 ofrenda/).waitFor();
+  assert.equal(site.db.prepare('SELECT COUNT(*) n FROM users').get().n, 1, 'nothing deleted yet');
+  await page.getByLabel('Yes, delete my ofrendas too').check();
+  await page.getByRole('button', { name: 'Delete my account' }).click();
+  await page.waitForURL(u => u.pathname === '/deleted');
+  await page.getByRole('heading', { name: 'Your account has been deleted' }).waitFor();
+  assert.equal(site.db.prepare('SELECT COUNT(*) n FROM users').get().n, 0);
+  assert.equal(site.db.prepare('SELECT COUNT(*) n FROM altars WHERE id = ?').get(id).n, 0);
+  await page.goto(site.url + '/my');
+  await page.waitForURL(u => u.pathname === '/signin');
+});
+
+withSite('legal pages: privacy and terms are public, linked from every page, and say what the product does', async () => {
+  const { page } = await visitor();
+  for (const [start, name] of [['/', 'Privacy'], ['/signin', 'Terms']]) {
+    await page.goto(site.url + start);
+    await page.getByRole('link', { name }).click();
+    await page.waitForURL(u => u.pathname === '/' + name.toLowerCase());
+  }
+  await page.goto(site.url + '/privacy');
+  const text = await page.locator('main').innerText();
+  for (const word of ['Cloudflare', 'Resend', 'Stripe', 'Delete your account', 'Anyone who has the link']) assert.ok(text.includes(word), word);
+  await page.goto(site.url + '/terms');
+  assert.ok((await page.locator('main').innerText()).includes('refunded in full'));
+  await assertLabelled(page);
+});

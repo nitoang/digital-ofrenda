@@ -4,6 +4,12 @@
 // checkout.mjs sets both when it creates the Checkout session. Anything unknown or missing unlocks nothing.
 // A card payment arrives as checkout.session.completed with payment_status "paid". A delayed payment method
 // arrives as completed/"unpaid" (ignored) and later as checkout.session.async_payment_succeeded (accepted).
+//
+// Refunds: a payment we acted on is recorded in `purchases`. When Stripe says a charge was refunded IN FULL
+// (charge.refunded with refunded=true; a partial refund changes nothing), the upgrade it paid for is taken away,
+// unless another unrefunded payment still covers the same thing (someone who paid twice and got one back
+// keeps what they paid for). Clearing an upgrade does not delete what an altar already holds: the next save is
+// simply held to the free limits again.
 
 import { json, readBody, timingSafeEqual } from './util.mjs';
 import { FEATURES } from './validate.mjs';
@@ -11,6 +17,7 @@ import * as store from './store.mjs';
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const PAID_EVENTS = ['checkout.session.completed', 'checkout.session.async_payment_succeeded'];
+const REFUND_EVENTS = ['charge.refunded'];
 const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 
 // Stripe signs "<timestamp>.<raw body>" with HMAC-SHA256; the header looks like "t=...,v1=...,v1=...".
@@ -37,6 +44,28 @@ export async function handleStripe(request, env, deps) {
     if (feature === 'platinum') ok = await store.setPlan(env.DB, s.client_reference_id, 'platinum');
     else if (FEATURES.includes(feature)) ok = await store.grantFeature(env.DB, s.client_reference_id, feature, deps.now());
     if (!ok) console.error('paid checkout for something that does not exist:', feature, s.client_reference_id); // 200 anyway: a retry would not help
+    else if (typeof s.payment_intent === 'string' && ID_RE.test(s.payment_intent) && (feature === 'platinum' || FEATURES.includes(feature))) {
+      await store.recordPurchase(env.DB, { paymentIntent: s.payment_intent, feature, reference: s.client_reference_id, now: deps.now() });
+    }
+  } else if (REFUND_EVENTS.includes(event?.type) && s?.refunded === true) {
+    await handleRefund(env, deps, s);
   }
   return json({ received: true });
+}
+
+// `charge` is Stripe's charge object. What was bought comes from our own record of the payment, or, for a
+// payment we have no record of, from the metadata we put on it when creating the Checkout session.
+async function handleRefund(env, deps, charge) {
+  const pi = typeof charge.payment_intent === 'string' && ID_RE.test(charge.payment_intent) ? charge.payment_intent : null;
+  const purchase = pi ? await store.getPurchase(env.DB, pi) : null;
+  const feature = purchase?.feature ?? charge.metadata?.feature;
+  const reference = purchase?.reference ?? charge.metadata?.reference;
+  if (!(feature === 'platinum' || FEATURES.includes(feature)) || !ID_RE.test(reference || '')) {
+    console.error('refund for a payment we cannot trace:', pi);
+    return; // 200 anyway: a retry would not help
+  }
+  if (pi && purchase) await store.markRefunded(env.DB, pi, deps.now());
+  if ((await store.countUnrefunded(env.DB, feature, reference)) > 0) return; // another payment still covers it
+  if (feature === 'platinum') await store.clearPlan(env.DB, reference);
+  else await store.removeFeature(env.DB, reference, feature);
 }

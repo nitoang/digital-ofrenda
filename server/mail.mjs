@@ -63,3 +63,15 @@ export const handoverMessage = ({ to, role }) => ({
     ? `The handover finished: you are now the owner of the ofrenda you agreed to look after.${sign}`
     : `Ownership of an ofrenda you kept moved to its successor. You are still a co-keeper and can keep editing.${sign}`,
 });
+
+export const emailChangeCodeMessage = ({ to, code }) => ({
+  to,
+  subject: `Your code to confirm this email address is ${code}`,
+  text: `Someone signed in to a Digital Ofrenda account asked to use this email address for it.\n\nTo confirm, enter this code on the page where you asked: ${code}\n\nIt works once and expires in 15 minutes. If this was not you, ignore this email and nothing will change.${sign}`,
+});
+
+export const emailChangedNoticeMessage = ({ to, newEmail }) => ({
+  to,
+  subject: 'The email address on your Digital Ofrenda account was changed',
+  text: `The email address on your account was changed to ${newEmail}, and every other device was signed out.\n\nIf you did this, there is nothing more to do. If you did not, someone else had access to your account: this address no longer signs in to it.${sign}`,
+});
