@@ -69,10 +69,10 @@ export async function handleStart(request, env, deps) {
   if (!email) return json({ error: 'bad_email', message: 'Enter a valid email address.' }, 400);
   if (!(await turnstileOk(request, env, deps, body.turnstile))) return json({ error: 'turnstile_failed' }, 403);
 
-  // method: "link" or "code" (what the sign-in page sends). Left out, both are emailed, for older callers.
-  const method = body.method === undefined ? 'both' : body.method;
-  if (!['link', 'code', 'both'].includes(method)) return json({ error: 'bad_method', message: 'Choose a link or a code.' }, 400);
-  const wantsLink = method !== 'code', wantsCode = method !== 'link';
+  // The person chooses how to sign in: "link" or "code". Exactly one is emailed.
+  const method = body.method;
+  if (method !== 'link' && method !== 'code') return json({ error: 'bad_method', message: 'Choose a link or a code.' }, 400);
+  const wantsLink = method === 'link', wantsCode = method === 'code';
   const now = deps.now();
   await store.purgeExpired(env.DB, now);
   const challenge = newToken();
@@ -83,15 +83,13 @@ export async function handleStart(request, env, deps) {
     const code = newCode();
     await store.addLoginChallenge(env.DB, {
       challenge,
-      linkHash: await sha256Hex(wantsCode && !wantsLink ? newToken() : linkToken),
-      codeHash: await sha256Hex(wantsLink && !wantsCode ? `${challenge}:${newCode()}:${newToken()}` : `${challenge}:${code}`),
+      linkHash: await sha256Hex(wantsLink ? linkToken : newToken()),
+      codeHash: await sha256Hex(wantsCode ? `${challenge}:${code}` : `${challenge}:${newCode()}:${newToken()}`),
       email, now, ttl: RULES.loginTtl,
     });
-    queueMail(deps, () => deps.mailer.send(signInMessage({
-      to: email,
-      ...(wantsLink ? { link: `${env.APP_URL}/signin#t=${linkToken}` } : {}),
-      ...(wantsCode ? { code } : {}),
-    })));
+    queueMail(deps, () => deps.mailer.send(signInMessage(wantsLink
+      ? { to: email, link: `${env.APP_URL}/signin#t=${linkToken}` }
+      : { to: email, code })));
   }
   return json({ challenge, method });
 }
