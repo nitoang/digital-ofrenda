@@ -90,8 +90,8 @@ await save(r.state);                                      // store the cleaned s
 - Limits: `RULES.sharesPerEmailPerDay` (3, per address across all ofrendas) and `RULES.sharesPerAltarPerDay` (20). To enforce them without keeping anyone's address, a view-only share is recorded as a one-way hash of the address for a day, then cleared (needs migration `0004`).
 - The emails are written in `server/mail.mjs` (`viewShareMessage`, `inviteMessage`). They name the sender by email address, since accounts have no display name yet, and the ofrenda by the name its owner gave it.
 
-**A successor.** The owner can name one person per altar to take over if they can no longer look after it. Naming someone grants nothing: they must sign in and agree first. A takeover then needs all of this:
-1. The owner has not been seen for 180 days (`RULES.inactiveAfter`).
+**A successor.** The owner can name one person per altar to take over if they can no longer look after it. Naming someone grants nothing: they must sign in and agree first. Agreeing makes them a co-keeper (they can edit, not delete); removing or replacing the successor takes that access away again. A takeover then needs all of this:
+1. The owner has not been seen for a year (`RULES.inactiveAfter`, 365 days).
 2. The successor asks. The owner is emailed and has 30 days (`RULES.claimWait`) to stop it; **signing in at any time cancels it**, and the successor is told.
 3. After the wait the successor completes it. They become owner and the previous owner stays on as a co-keeper. Upgrades the old owner's platinum plan was providing are copied onto the altar so the family keeps them.
 

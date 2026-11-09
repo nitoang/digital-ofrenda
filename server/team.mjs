@@ -2,8 +2,8 @@
 // that lets the successor inherit an altar whose owner has gone quiet.
 //
 // Takeover rules, all in RULES (rules.mjs):
-//   1. The successor must have accepted. Naming someone gives them no access at all.
-//   2. The owner must not have been seen for `inactiveAfter` (180 days).
+//   1. The successor must have accepted. Naming someone gives them no access; agreeing makes them a co-keeper.
+//   2. The owner must not have been seen for `inactiveAfter` (a year).
 //   3. The successor asks. The owner is emailed and has `claimWait` (30 days) to stop it, and simply
 //      signing in at any time cancels it, so a person who is only grieving quietly is never overtaken.
 //   4. After the wait, the successor completes it. They become owner; the old owner stays on as a co-keeper.
@@ -171,6 +171,7 @@ export async function handleSetSuccessor(request, env, deps, id) {
   const current = await store.getSuccessor(env.DB, id);
   if (current && now - current.designated_at < 3_600_000) return json({ error: 'too_soon' }, 429); // no re-sending to one inbox in a loop
   const token = newToken();
+  await store.revokeSuccessorAccess(env.DB, id); // a new request starts over: the old agreement, and its access, are gone
   await store.setSuccessor(env.DB, { altarId: id, email, tokenHash: await sha256Hex(token), designatedBy: s.user.id, now });
   await store.cancelClaim(env.DB, id, now); // a different successor cannot ride on an old request
   queueMail(deps, () => deps.mailer.send(successorAskMessage({ to: email, from: s.user.email, link: `${env.APP_URL}/successor#s=${token}` })));
@@ -180,6 +181,7 @@ export async function handleSetSuccessor(request, env, deps, id) {
 export async function handleClearSuccessor(request, env, deps, id) {
   const s = await asRole(request, env, deps, id, ['owner']);
   if (isResponse(s)) return s;
+  await store.revokeSuccessorAccess(env.DB, id);
   await store.clearSuccessor(env.DB, id);
   await store.cancelClaim(env.DB, id, deps.now());
   return json({ ok: true });
@@ -192,7 +194,9 @@ export async function handleAcceptSuccessor(request, env, deps) {
   if (isResponse(body)) return body;
   if (typeof body.token !== 'string' || body.token.length > 200) return json({ error: 'invalid_or_expired' }, 400);
   const row = await store.acceptSuccessor(env.DB, { tokenHash: await sha256Hex(body.token), userId: s.user.id, email: s.user.email, now: deps.now() });
-  return row ? json({ id: row.altar_id }) : json({ error: 'invalid_or_expired' }, 400);
+  if (!row) return json({ error: 'invalid_or_expired' }, 400);
+  await store.grantSuccessorAccess(env.DB, row.altar_id, s.user.id, deps.now()); // agreeing makes them a co-keeper
+  return json({ id: row.altar_id });
 }
 
 // ---------- takeover ----------

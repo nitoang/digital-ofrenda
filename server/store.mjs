@@ -222,6 +222,12 @@ export const clearSuccessor = (db, altarId) => run(db, 'DELETE FROM successors W
 export const acceptSuccessor = (db, { tokenHash, userId, email, now }) =>
   one(db, 'UPDATE successors SET accepted_user_id = ?, accepted_at = ? WHERE token_hash = ? AND email = ? AND accepted_user_id IS NULL RETURNING altar_id',
     userId, now, tokenHash, email);
+// A successor who agrees becomes a co-keeper. If they already keep the ofrenda some other way, nothing changes.
+export const grantSuccessorAccess = (db, altarId, userId, now) =>
+  run(db, "INSERT OR IGNORE INTO altar_members (altar_id, user_id, role, added_at, via_successor) VALUES (?, ?, 'keeper', ?, 1)", altarId, userId, now);
+// Removing or replacing the successor ends the access they had only because of it.
+export const revokeSuccessorAccess = (db, altarId) =>
+  run(db, "DELETE FROM altar_members WHERE altar_id = ? AND via_successor = 1 AND role = 'keeper'", altarId);
 export const altarsWhereSuccessor = (db, userId) =>
   all(db, 'SELECT s.altar_id AS id, c.executes_at, c.cancelled_at, c.completed_at FROM successors s LEFT JOIN claims c ON c.altar_id = s.altar_id WHERE s.accepted_user_id = ?', userId);
 
@@ -255,7 +261,7 @@ export const reopenClaim = (db, altarId) => run(db, 'UPDATE claims SET completed
 // old owner's platinum plan was providing are written onto the altar so the family keeps them.
 export const handOver = (db, { altarId, oldOwnerId, newOwnerId, now, grants }) => db.batch([
   stmt(db, "UPDATE altar_members SET role = 'keeper' WHERE altar_id = ? AND user_id = ? AND role = 'owner'", altarId, oldOwnerId),
-  stmt(db, "INSERT INTO altar_members (altar_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?) ON CONFLICT (altar_id, user_id) DO UPDATE SET role = 'owner'", altarId, newOwnerId, now),
+  stmt(db, "INSERT INTO altar_members (altar_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?) ON CONFLICT (altar_id, user_id) DO UPDATE SET role = 'owner', via_successor = 0", altarId, newOwnerId, now),
   stmt(db, 'DELETE FROM successors WHERE altar_id = ?', altarId),
   ...grants.map(name => stmt(db, 'INSERT OR IGNORE INTO features (altar_id, name, granted_at) VALUES (?, ?, ?)', altarId, name, now)),
 ]);

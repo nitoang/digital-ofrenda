@@ -22,7 +22,7 @@ const WORDS = {
   },
   successor: {
     title: 'You have been asked to be a successor',
-    body: 'If the owner can no longer look after this ofrenda, you could take it over. You get no access now. You would only ever be able to ask after a long silence, and the owner is told first and can stop it by signing in.',
+    body: 'If the owner can no longer look after this ofrenda, you could take it over. When you agree, you can add to it right away as a co-keeper, but you cannot delete it. You could only ask to take it over after the owner has been away for about a year, and the owner is told first and can stop it by signing in.',
     button: 'Agree to be the successor',
     bad: 'This request has expired, was already answered, or was sent to a different email address.',
   },
@@ -46,7 +46,7 @@ const WORDS = {
       const { id } = await api('POST', kind === 'invite' ? '/invites/accept' : '/successor/accept', { token });
       pending.clear();
       mount(root, frame(me, h('h1', {}, kind === 'invite' ? 'You are now a co-keeper' : 'Thank you'),
-        h('p', {}, kind === 'invite' ? 'You can open the ofrenda and start adding to it.' : 'You are this ofrenda’s successor. Nothing changes unless the owner can no longer look after it.'),
+        h('p', {}, kind === 'invite' ? 'You can open the ofrenda and start adding to it.' : 'You are this ofrenda’s successor, and a co-keeper, so you can open it and start adding to it.'),
         h('p', {}, link('Open the ofrenda', '/a/' + id, { class: 'button primary' }))));
     } catch (e) {
       msg.fail(e.status === 400 ? WORDS.bad : describe(e));
