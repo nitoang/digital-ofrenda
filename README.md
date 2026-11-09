@@ -84,6 +84,12 @@ await save(r.state);                                      // store the cleaned s
 - **Co-keepers:** invited by email (up to 10, invitations last 7 days and only work for the invited address). They can edit and can leave, but cannot delete the altar or manage people. They see who else keeps it.
 - Altars use the owner's entitlements, so a co-keeper never needs a plan of their own.
 
+**Sharing.** On the Keepers page the owner uses **Share this ofrenda**: enter an email address and choose what that person can do. **View only** (the default) emails them the link, and they need no account. **View and edit** invites them as a co-keeper, exactly as above. Either can carry an optional note (up to `RULES.noteMax` characters, plain text, no web links, so the email cannot be used to send someone a link of the owner's choosing).
+- `POST /ofrendas/:id/share {email, access: "view" | "edit", note?}` (owner only) -> 201 `{access}`. Errors: `bad_access`, `bad_email`, `bad_note`, `note_too_long`, `note_has_link`, `already_member` (409), `too_many_shares` and `share_limit` (429), plus the invitation errors for `edit`.
+- View only is **not** a lock: anyone who has the link can view an ofrenda, so a recipient can pass it on. It is a courtesy that says who the link came from. Only co-keepers can edit. Making ofrendas private to invited viewers is not built.
+- Limits: `RULES.sharesPerEmailPerDay` (3, per address across all ofrendas) and `RULES.sharesPerAltarPerDay` (20). To enforce them without keeping anyone's address, a view-only share is recorded as a one-way hash of the address for a day, then cleared (needs migration `0004`).
+- The emails are written in `server/mail.mjs` (`viewShareMessage`, `inviteMessage`). They name the sender by email address, since accounts have no display name yet, and the ofrenda by the name its owner gave it.
+
 **A successor.** The owner can name one person per altar to take over if they can no longer look after it. Naming someone grants nothing: they must sign in and agree first. A takeover then needs all of this:
 1. The owner has not been seen for 180 days (`RULES.inactiveAfter`).
 2. The successor asks. The owner is emailed and has 30 days (`RULES.claimWait`) to stop it; **signing in at any time cancels it**, and the successor is told.

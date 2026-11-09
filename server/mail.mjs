@@ -32,10 +32,24 @@ export const signInMessage = ({ to, link, code }) => ({
   text: `Sign in to your ofrendas:\n\n${link}\n\nOr enter this code on the sign-in page: ${code}\n\nBoth work once and expire in 15 minutes.${sign}`,
 });
 
-export const inviteMessage = ({ to, from, link }) => ({
+// Shared wording for the two "someone shared an ofrenda with you" emails (view only, and view and edit).
+const forName = name => (name ? ` for ${name}` : '');
+const noteBlock = (from, note) => (note ? `A note from ${from}:\n${note}\n\n` : '');
+const whyYouGotThis = from => `You're getting this because ${from} entered your email address. If it isn't for you, you can ignore it.`;
+const warmSign = '\n\nCon mucho cariño,\nDigifrenda 🧡';
+
+// "View and edit": an invitation to be a co-keeper. Needs a sign-in with the invited address.
+export const inviteMessage = ({ to, from, link, name = '', note = '' }) => ({
   to,
   subject: `${from} invited you to help keep an ofrenda`,
-  text: `${from} invited you to be a co-keeper of an ofrenda, so you can add to it and change it together.\n\nSign in with this email address to accept:\n${link}\n\nThe invitation expires in 7 days.${sign}`,
+  text: `${from} built an ofrenda${forName(name)} and invited you to keep it with them.\n\nIt holds photos, favorite things, and memories. As a co-keeper you can add a note or something they loved, and change what's there. You can't delete the ofrenda or change who keeps it.\n\n${noteBlock(from, note)}Sign in with this email address to accept:\n${link}\n\nThe invitation expires in 7 days.\n\n${whyYouGotThis(from)}${warmSign}`,
+});
+
+// "View only": the link to the ofrenda. No account is needed to look at it.
+export const viewShareMessage = ({ to, from, link, name = '', note = '' }) => ({
+  to,
+  subject: `${from} shared an ofrenda${forName(name)} with you`,
+  text: `${from} built an ofrenda${forName(name)} and wants you to visit.\n\nIt holds photos, favorite things, and memories. Come sit with it for a minute. Stay as long as you like.\n\n${noteBlock(from, note)}Visit the ofrenda:\n${link}\n\n${whyYouGotThis(from)}${warmSign}`,
 });
 
 export const successorAskMessage = ({ to, from, link }) => ({

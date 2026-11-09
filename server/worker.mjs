@@ -26,7 +26,8 @@
 //   PUT  /ofrendas/:id/slug {slug}                         the owner picks a vanity name (/a/abuela-rosa)
 //   PUT  /ofrendas/:id | DELETE /ofrendas/:id              save (limits enforced) | delete (owner)
 //   GET  /ofrendas/:id/team                                members; the owner also sees invites, successor, claim
-//   POST /ofrendas/:id/invites {email} | DELETE /ofrendas/:id/invites/:inviteId
+//   POST /ofrendas/:id/share {email, access: "view"|"edit", note?}   owner shares: view only (emails the link) or view and edit (a co-keeper invitation)
+//   POST /ofrendas/:id/invites {email} | DELETE /ofrendas/:id/invites/:inviteId   co-keeper invitations
 //   POST /invites/accept {token}
 //   DELETE /ofrendas/:id/members/:userId                   owner removes a co-keeper, or a co-keeper leaves
 //   PUT /ofrendas/:id/successor {email} | DELETE /ofrendas/:id/successor
@@ -68,6 +69,7 @@ const ROUTES = [
   ['DELETE', new RegExp(`^/ofrendas/${ID}$`), altars.handleDelete],
   ['PUT', new RegExp(`^/ofrendas/${ID}/slug$`), altars.handleSetSlug],
   ['GET', new RegExp(`^/ofrendas/${ID}/team$`), team.handleTeam],
+  ['POST', new RegExp(`^/ofrendas/${ID}/share$`), team.handleShare],
   ['POST', new RegExp(`^/ofrendas/${ID}/invites$`), team.handleInvite],
   ['DELETE', new RegExp(`^/ofrendas/${ID}/invites/${ID}$`), team.handleRevokeInvite],
   ['POST', /^\/invites\/accept$/, team.handleAcceptInvite],

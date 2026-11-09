@@ -16,6 +16,15 @@ const INVITE_ERRORS = {
   too_many_invites: 'That address has been sent several invitations today. Please try again tomorrow.',
   bad_email: 'That email address does not look right.',
 };
+const SHARE_ERRORS = {
+  ...INVITE_ERRORS,
+  bad_access: 'Choose view only, or view and edit.',
+  bad_note: 'That note could not be used. Please use plain text.',
+  note_too_long: 'That note is too long. Please keep it under 280 characters.',
+  note_has_link: 'Notes cannot contain web links.',
+  too_many_shares: 'That address has been sent several links today. Please try again tomorrow.',
+  share_limit: 'This ofrenda has sent a lot of links today. Please try again tomorrow.',
+};
 const SUCCESSOR_ERRORS = {
   bad_email: 'Enter a different email address (not your own).',
   too_soon: 'You just changed the successor. Please wait an hour before changing it again.',
@@ -68,12 +77,29 @@ async function render(note) {
 }
 
 function ownerSections(team, msg, run) {
+  // Sharing: the owner picks what the person can do. View only is the default, the safer choice.
   const email = h('input', { id: 'invite-email', type: 'email', autocomplete: 'off', required: true });
-  const invite = h('button', { type: 'submit', class: 'primary' }, 'Send invitation');
-  const inviteForm = h('form', { novalidate: true, class: 'row' }, h('label', { for: 'invite-email' }, 'Email address'), email, invite);
-  inviteForm.addEventListener('submit', ev => {
+  const choice = (value, label, hint, checked) => h('label', { class: 'check' },
+    h('input', { type: 'radio', name: 'access', value, checked }),
+    h('span', {}, h('strong', {}, label), h('span', { class: 'muted' }, ' — ' + hint)));
+  const access = h('fieldset', { class: 'choices' },
+    h('legend', {}, 'What can they do?'),
+    choice('view', 'View only', 'we email them the link, and they can look but not change anything.', true),
+    choice('edit', 'View and edit', 'they are invited as a co-keeper, and can add to the ofrenda and change it.', false));
+  const note = h('textarea', { id: 'share-note', rows: 3, maxlength: 280, autocomplete: 'off' });
+  const share = h('button', { type: 'submit', class: 'primary' }, 'Share');
+  const shareForm = h('form', { novalidate: true, class: 'share-form' },
+    h('label', { for: 'invite-email' }, 'Email address'), email,
+    access,
+    h('label', { for: 'share-note' }, 'A note to go with it (optional)'), note,
+    h('p', { class: 'muted' }, 'Plain text, up to 280 characters, and no web links.'),
+    share);
+  shareForm.addEventListener('submit', ev => {
     ev.preventDefault();
-    busy(invite, () => run(() => api('POST', `/ofrendas/${id}/invites`, { email: email.value }), 'Invitation sent.', INVITE_ERRORS));
+    const level = shareForm.querySelector('input[name="access"]:checked').value;
+    busy(share, () => run(async () => {
+      await api('POST', `/ofrendas/${id}/share`, { email: email.value, access: level, note: note.value });
+    }, level === 'edit' ? 'Invitation sent.' : 'Link sent.', SHARE_ERRORS));
   });
   const pending = team.invites.length ? h('ul', { class: 'plain' }, team.invites.map(i => h('li', {},
     h('span', { class: 'grow' }, i.email, h('span', { class: 'muted' }, ` — expires ${date(i.expiresAt)}`)),
@@ -106,9 +132,9 @@ function ownerSections(team, msg, run) {
     h('p', { id: 'vanity-help', class: 'muted' }, 'Give this ofrenda an easy address like ', h('strong', {}, location.origin + '/a/abuela-rosa'), '. Letters, numbers and hyphens, 3 to 40 characters. The original link keeps working, and so do earlier names, so links you already shared never break. Anyone who guesses a name can view the ofrenda, so choose one only if you are happy for it to be easy to find.'),
     team.slug ? h('p', {}, 'Current name: ', link(location.origin + '/a/' + team.slug, '/a/' + team.slug)) : null,
     nameForm,
-    h('h2', {}, 'Invite a co-keeper'),
-    h('p', { class: 'muted' }, 'Co-keepers can add to the ofrenda and change it. They cannot delete it or change who keeps it.'),
-    inviteForm, pending,
+    h('h2', {}, 'Share this ofrenda'),
+    h('p', { class: 'muted' }, 'Anyone who has the link can view this ofrenda, so a person you share it with can pass the link on. Only people you invite to view and edit can change it. They become co-keepers: they cannot delete the ofrenda or change who keeps it, and they must sign in with the email address you enter.'),
+    shareForm, pending,
     h('h2', {}, 'Successor'),
     h('p', { class: 'muted' }, 'If you can no longer look after this ofrenda, your successor can take it over. They get no access now, and can only ask after you have been away for about six months. You are told first and can stop it by signing in.'),
     status, claim, sForm,

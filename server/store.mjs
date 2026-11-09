@@ -104,6 +104,7 @@ export const purgeExpired = (db, now) => db.batch([
   stmt(db, 'DELETE FROM login_challenges WHERE expires_at < ? AND created_at < ?', now - 86_400_000, now - 86_400_000),
   stmt(db, 'DELETE FROM sessions WHERE expires_at < ?', now),
   stmt(db, 'DELETE FROM email_changes WHERE expires_at < ?', now - 86_400_000),
+  stmt(db, 'DELETE FROM view_shares WHERE created_at < ?', now - 86_400_000),
 ]);
 
 // ---------- sessions ----------
@@ -184,6 +185,17 @@ export const listInvites = (db, altarId, now) =>
   all(db, 'SELECT id, email, expires_at FROM invites WHERE altar_id = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ? ORDER BY created_at', altarId, now);
 export async function countInvitesSince(db, email, since) {
   const r = await one(db, 'SELECT COUNT(*) AS n FROM invites WHERE email = ? AND created_at > ?', email, since);
+  return r ? Number(r.n) : 0;
+}
+// View-only shares: only a hash of the address, only to rate-limit repeat emails (rows are purged after a day).
+export const addViewShare = (db, { id, altarId, sharedBy, emailHash, now }) =>
+  run(db, 'INSERT INTO view_shares (id, altar_id, shared_by, email_hash, created_at) VALUES (?, ?, ?, ?, ?)', id, altarId, sharedBy, emailHash, now);
+export async function countViewSharesToEmail(db, emailHash, since) {
+  const r = await one(db, 'SELECT COUNT(*) AS n FROM view_shares WHERE email_hash = ? AND created_at > ?', emailHash, since);
+  return r ? Number(r.n) : 0;
+}
+export async function countViewSharesFromAltar(db, altarId, since) {
+  const r = await one(db, 'SELECT COUNT(*) AS n FROM view_shares WHERE altar_id = ? AND created_at > ?', altarId, since);
   return r ? Number(r.n) : 0;
 }
 export const revokeInvite = async (db, altarId, id, now) =>
