@@ -1,0 +1,10 @@
+name = "digital-ofrenda-mailer"   # must match the service name in server/wrangler.example.toml
+main = "worker.mjs"
+compatibility_date = "2025-01-01"
+workers_dev = false               # no public address: only the API Worker can call it
+
+[vars]
+MAIL_FROM = "Duelokit Ofrenda <hello@digifrenda.duelokit.com>"
+
+# Secret (never commit it). Add it in the dashboard (Worker > Settings > Variables and Secrets) or with:
+#   npx wrangler secret put RESEND_API_KEY
