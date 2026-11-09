@@ -1,6 +1,6 @@
-// Email is sent through a service binding named MAILER: a small Worker you write for whichever email
-// provider you choose. It receives POST /send with JSON { to, subject, text } and returns 2xx when the
-// provider accepted the message. That keeps this repo free of any vendor, API key or SDK.
+// Email is sent through a service binding named MAILER: the Worker in mailer/, which is the only
+// code that knows the email provider. It receives POST /send with JSON { to, subject, text } and returns 2xx when the
+// provider accepted the message. That keeps the API Worker free of any vendor, API key or SDK.
 //
 // Links always use APP_URL (your configured site), never the request's Host header, so a forged Host
 // header cannot make us email a link to somebody else's site. Tokens sit in the #fragment, so the page
