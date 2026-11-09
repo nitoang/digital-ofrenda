@@ -18,7 +18,7 @@ service = "digital-ofrenda-mailer"
 #   [[routes]]
 #   pattern = "ofrenda.example.com/auth/*"
 #   zone_name = "example.com"
-# Patterns: /auth/*   /me   /checkout   /ofrendas   /ofrendas/*   /invites/*   /successor/*   /stripe/*
+# Patterns: /auth/*   /me   /me/*   /checkout   /ofrendas   /ofrendas/*   /invites/*   /successor/*   /stripe/*
 # ("/successor" with nothing after it is a web page, not part of the API.)
 
 [vars]

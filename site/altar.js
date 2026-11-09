@@ -1,11 +1,12 @@
-import { api, getMe, describe } from './api.js';
+import { api, getMe, describe, resolveRef } from './api.js';
 import { h, mount, frame, messages, link } from './ui.js';
 import { makeStorage } from './storage.js';
 import { showUpgrade } from './upgrade.js';
 import { purchaseReturn, waitUntil, WAITING, SLOW, CANCELLED } from './purchase.js';
 
 const root = document.getElementById('app');
-const id = (/^\/a\/([A-Za-z0-9_-]{1,64})\/?$/.exec(location.pathname) || [])[1];
+const ref = (/^\/a\/([A-Za-z0-9_-]{1,64})\/?$/.exec(location.pathname) || [])[1];
+let id = null; // the ofrenda's real id; the address may have used its vanity name instead
 
 function shareBox(url) {
   const input = h('input', { id: 'share-url', type: 'url', readonly: true, value: url, 'aria-label': 'Link to view this ofrenda' });
@@ -19,6 +20,7 @@ function shareBox(url) {
 }
 
 (async () => {
+  id = await resolveRef(ref);
   if (!id) { mount(root, frame(null, h('h1', {}, 'Ofrenda not found'), h('p', {}, link('Go to the home page', '/')))); return; }
   const back = purchaseReturn();
   let me;
@@ -54,8 +56,8 @@ function shareBox(url) {
   el.id = id;
   el.setAttribute('mode', membership ? 'edit' : 'view');
 
-  const tools = h('div', {}, shareBox(location.origin + '/a/' + id),
-    membership ? h('p', {}, link('Keepers and sharing', `/a/${id}/keepers`, { class: 'button' }))
+  const tools = h('div', {}, shareBox(location.origin + '/a/' + ((membership && membership.slug) || id)),
+    membership ? h('p', {}, link('Keepers and sharing', `/a/${(membership && membership.slug) || id}/keepers`, { class: 'button' }))
       : (me ? null : h('p', { class: 'muted' }, 'Do you keep this ofrenda? ', link('Sign in', '/signin?next=/a/' + id), '.')));
   const [header, main] = frame(me, tools, msg.el, el);
   main.classList.add('wide');

@@ -249,7 +249,7 @@ test('sessions: renewed when used, expire when idle, end on logout, and logout-a
 
   const phone = await t.signIn('maria@example.com');
   const laptop = await t.signIn('maria@example.com');
-  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM sessions').get().n, 3);
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM sessions').get().n, 2, 'the expired one was tidied away by the new sign-in');
   const out = await phone.call('POST', '/auth/logout');
   assert.match(out.headers.get('set-cookie'), /Max-Age=0$/);
   assert.equal((await phone.call('GET', '/me')).status, 401);
@@ -389,12 +389,12 @@ test('co-keepers: an invitation is bound to the invited email and works once', a
   assert.equal((await sam.call('PUT', `/ofrendas/${id}`, altar(frame('a', png())))).status, 200, 'a co-keeper can edit');
   const team = await sam.json('GET', `/ofrendas/${id}/team`);
   assert.deepEqual(team.body.members.map(m => [m.email, m.role]), [['owner@example.com', 'owner'], ['sam@example.com', 'keeper']]);
-  assert.deepEqual(Object.keys(team.body).sort(), ['entitlements', 'members', 'role'], 'a co-keeper does not see invites, successor or takeover details');
+  assert.deepEqual(Object.keys(team.body).sort(), ['entitlements', 'members', 'role', 'slug'], 'a co-keeper does not see invites, successor or takeover details');
   assert.deepEqual(team.body.entitlements, { extraPhotos: false, sevenTiers: false });
   assert.equal((await sam.call('POST', `/ofrendas/${id}/invites`, { email: 'z@example.com' })).status, 403);
   assert.equal((await sam.call('PUT', `/ofrendas/${id}/successor`, { email: 'z@example.com' })).status, 403);
   assert.equal((await sam.call('DELETE', `/ofrendas/${id}`)).status, 403);
-  assert.deepEqual((await sam.json('GET', '/me')).body.altars, [{ id, role: 'keeper' }]);
+  assert.deepEqual((await sam.json('GET', '/me')).body.altars, [{ id, role: 'keeper', slug: null }]);
 });
 
 test('co-keepers: invitations expire, can be revoked, and are limited', async () => {
@@ -877,4 +877,305 @@ test('checkout, then payment: the webhook turns the purchase into the upgrade', 
   assert.equal((await deliver(t, paid(stripe.calls.at(-1).form))).status, 200);
   assert.equal((await owner.json('GET', '/me')).body.user.plan, 'platinum');
   for (let i = 0; i < 4; i++) assert.equal((await owner.call('POST', '/ofrendas')).status, 201);
+});
+
+// ---------- refunds ----------
+
+const paidPI = (over, pi) => checkout({ payment_intent: pi, ...over });
+const refund = (pi, over = {}) => JSON.stringify({ type: 'charge.refunded', data: { object: { refunded: true, payment_intent: pi, metadata: {}, ...over } } });
+
+test('refunds: a full refund takes back exactly what that payment bought, and a partial one changes nothing', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  const features = () => t.db.prepare('SELECT name FROM features WHERE altar_id = ? ORDER BY name').all(id).map(r => r.name);
+  await deliver(t, paidPI({ client_reference_id: id, metadata: { feature: 'sevenTiers' } }, 'pi_tiers'));
+  await deliver(t, paidPI({ client_reference_id: id, metadata: { feature: 'extraPhotos' } }, 'pi_photos'));
+  assert.deepEqual(features(), ['extraPhotos', 'sevenTiers']);
+  assert.equal((await deliver(t, refund('pi_tiers', { refunded: false, amount_refunded: 100 }))).status, 200);
+  assert.deepEqual(features(), ['extraPhotos', 'sevenTiers'], 'partial refund: nothing changes');
+  assert.equal((await deliver(t, refund('pi_tiers'))).status, 200);
+  assert.deepEqual(features(), ['extraPhotos'], 'only what that payment bought');
+  assert.equal((await deliver(t, refund('pi_tiers'))).status, 200, 'delivered twice');
+  assert.deepEqual(features(), ['extraPhotos']);
+  const r = t.db.prepare('SELECT refunded_at FROM purchases WHERE payment_intent = ?');
+  assert.ok(r.get('pi_tiers').refunded_at && r.get('pi_photos').refunded_at === null);
+});
+
+test('refunds: platinum is cleared, and a refund for something unknown or unsigned does nothing', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  await deliver(t, paidPI({ client_reference_id: maria.id, metadata: { feature: 'platinum' } }, 'pi_plat'));
+  const plan = () => t.db.prepare('SELECT plan FROM users WHERE id = ?').get(maria.id).plan;
+  assert.equal(plan(), 'platinum');
+  for (const odd of [refund('pi_nope'), refund('pi_x', { metadata: { feature: 'admin', reference: maria.id } }), refund('../x'), refund(undefined, { metadata: { feature: 'platinum', reference: '../x' } })]) {
+    assert.equal((await deliver(t, odd)).status, 200);
+  }
+  assert.equal(plan(), 'platinum', 'untraceable refunds touch nothing');
+  assert.equal((await t.call('POST', '/stripe/webhook', { body: refund('pi_plat'), origin: null })).status, 400, 'unsigned');
+  assert.equal(plan(), 'platinum');
+  assert.equal((await deliver(t, refund('pi_plat'))).status, 200);
+  assert.equal(plan(), null);
+  assert.equal((await maria.json('GET', '/me')).body.user.plan, null);
+});
+
+test('refunds: paying twice and being refunded once keeps what the other payment covers', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  const count = () => t.db.prepare('SELECT COUNT(*) n FROM features WHERE altar_id = ?').get(id).n;
+  await deliver(t, paidPI({ client_reference_id: id }, 'pi_a'));
+  await deliver(t, paidPI({ client_reference_id: id }, 'pi_b'));
+  await deliver(t, refund('pi_b'));
+  assert.equal(count(), 1, 'the first payment still covers it');
+  await deliver(t, refund('pi_a'));
+  assert.equal(count(), 0);
+});
+
+test('refunds: a payment with no record is traced through the metadata we put on it', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  t.grant(id, 'sevenTiers');
+  await deliver(t, refund('pi_old', { metadata: { feature: 'sevenTiers', reference: id } }));
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM features').get().n, 0);
+});
+
+// ---------- changing the email address ----------
+
+test('email change: the code goes to the new address, nothing changes until it is entered, and other devices are signed out', async () => {
+  const t = await setup();
+  const phone = await t.signIn('maria@example.com');
+  const laptop = await t.signIn('maria@example.com');
+  const other = await t.signIn('other@example.com');
+  const id = await t.altarFor(phone);
+  assert.equal((await t.call('POST', '/me/email', { body: { email: 'new@example.com' } })).status, 401);
+  assert.equal((await phone.call('POST', '/me/email', { email: 'new@example.com' }).then(r => r.status)), 200);
+  const mail = (await t.mailTo('new@example.com'))[0];
+  assert.match(mail.subject, /\d{6}/);
+  assert.equal((await t.mailTo('maria@example.com')).filter(m => /changed/.test(m.subject)).length, 0, 'the old address is told only when it happens');
+  assert.equal((await phone.json('GET', '/me')).body.user.email, 'maria@example.com', 'not yet');
+  const code = /(\d{6})/.exec(mail.subject)[1];
+  const bad = String((Number(code) + 1) % 1_000_000).padStart(6, '0');
+  assert.equal((await phone.call('POST', '/me/email/confirm', { code: bad })).status, 400);
+  assert.equal((await other.call('POST', '/me/email/confirm', { code })).status, 400, 'the code is for the account that asked');
+  const ok = await phone.json('POST', '/me/email/confirm', { code });
+  assert.deepEqual([ok.status, ok.body], [200, { email: 'new@example.com' }]);
+  assert.equal((await phone.json('GET', '/me')).body.user.email, 'new@example.com');
+  assert.equal((await laptop.call('GET', '/me')).status, 401, 'other devices signed out');
+  assert.equal((await phone.call('POST', '/me/email/confirm', { code })).status, 400, 'works once');
+  const notice = (await t.mailTo('maria@example.com')).find(m => /changed/.test(m.subject));
+  assert.ok(notice && notice.text.includes('new@example.com'));
+  assert.equal((await phone.json('GET', `/ofrendas/${id}/team`)).body.role, 'owner', 'same account, same ofrendas');
+  // The old address now signs in to a fresh, empty account.
+  const again = await t.signIn('maria@example.com');
+  assert.notEqual(again.id, phone.id);
+});
+
+test('email change: bad addresses, the same address, wrong codes, expiry, a taken address, and mail-bombing', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  await t.signIn('taken@example.com');
+  for (const email of ['nope', '', undefined, 'maria@example.com', ' MARIA@example.com ']) {
+    assert.equal((await maria.call('POST', '/me/email', { email })).status, 400, String(email));
+  }
+  const send = async (email = 'new@example.com') => {
+    const before = (await t.mailTo(email)).length;
+    const r = await maria.call('POST', '/me/email', { email });
+    return { status: r.status, code: r.status === 200 ? /(\d{6})/.exec((await t.mailTo(email))[before].subject)[1] : null };
+  };
+  let { code } = await send();
+  for (let i = 0; i < t.RULES.emailChangeAttempts; i++) assert.equal((await maria.call('POST', '/me/email/confirm', { code: '000000' })).status, 400);
+  assert.equal((await maria.call('POST', '/me/email/confirm', { code })).status, 400, 'five guesses, then the right code is refused too');
+  ({ code } = await send());
+  t.tick(t.RULES.emailChangeTtl + 1);
+  assert.equal((await maria.call('POST', '/me/email/confirm', { code })).status, 400, 'expired');
+  assert.equal((await maria.call('POST', '/me/email/confirm', { code: 'abcdef' })).status, 400);
+  assert.equal((await maria.call('POST', '/me/email/confirm', { code: 123456 })).status, 400);
+  ({ code } = await send('taken@example.com'));
+  const clash = await maria.json('POST', '/me/email/confirm', { code });
+  assert.deepEqual([clash.status, clash.body.error], [409, 'email_unavailable']);
+  assert.equal((await maria.json('GET', '/me')).body.user.email, 'maria@example.com');
+  // At most emailChangesPerHour codes an hour, however the address varies.
+  const sends = [];
+  for (let i = 0; i < t.RULES.emailChangesPerHour + 2; i++) sends.push((await send(`victim${i}@example.com`)).status);
+  assert.deepEqual(sends.filter(s => s === 200).length + sends.filter(s => s === 429).length, sends.length);
+  assert.ok(sends.includes(429));
+  t.tick(HOUR + 1);
+  assert.equal((await send('later@example.com')).status, 200, 'allowed again after the hour');
+});
+
+test('email change: the CSRF origin check applies', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const r = await t.call('POST', '/me/email', { body: { email: 'new@example.com' }, cookie: maria.cookie, origin: 'https://evil.test' });
+  assert.equal(r.status, 403);
+});
+
+// ---------- deleting an account ----------
+
+test('delete account: needs sign-in and the email typed back, then removes the person and their traces', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const sam = await t.signIn('sam@example.com');
+  assert.equal((await t.call('DELETE', '/me', { body: { email: 'sam@example.com' } })).status, 401);
+  assert.equal((await sam.call('DELETE', '/me', { email: 'someone@else.com' })).status, 400);
+  assert.equal((await sam.call('DELETE', '/me', {})).status, 400);
+  // Sam keeps a co-kept altar of Maria's, was invited to another, and is a named successor on a third.
+  const mine = await t.altarFor(maria, altar(frame('a', png())));
+  await maria.call('POST', `/ofrendas/${mine}/invites`, { email: 'sam@example.com' });
+  await sam.call('POST', '/invites/accept', { token: await t.tokenFrom('sam@example.com', /#i=([\w-]{43})/) });
+  const second = await t.altarFor(maria);
+  await maria.call('PUT', `/ofrendas/${second}/successor`, { email: 'sam@example.com' });
+  const third = await t.altarFor(maria);
+  await maria.call('POST', `/ofrendas/${third}/invites`, { email: 'sam@example.com' });
+  const res = await sam.call('DELETE', '/me', { email: ' SAM@example.com ' });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('set-cookie'), /Max-Age=0/);
+  for (const [table, col] of [['users', 'email'], ['login_challenges', 'email'], ['invites', 'email'], ['successors', 'email']]) {
+    assert.equal(t.db.prepare(`SELECT COUNT(*) n FROM ${table} WHERE ${col} = 'sam@example.com'`).get().n, 0, table);
+  }
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM sessions WHERE user_id = ?').get(sam.id).n, 0);
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM altar_members WHERE user_id = ?').get(sam.id).n, 0);
+  assert.equal((await sam.call('GET', '/me')).status, 401);
+  assert.equal((await maria.call('GET', `/ofrendas/${mine}`)).status, 200, 'what Maria owns is untouched');
+  assert.deepEqual((await maria.json('GET', `/ofrendas/${mine}/team`)).body.members.map(m => m.email), ['maria@example.com']);
+  // Signing in with the old address starts over with nothing.
+  const fresh = await t.signIn('sam@example.com');
+  assert.equal((await fresh.json('GET', '/me')).body.altars.length, 0);
+});
+
+test('delete account: owned ofrendas are only deleted when the person says so, and take their co-keepers\' access with them', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const sam = await t.signIn('sam@example.com');
+  const id = await t.altarFor(maria, altar(frame('a', png())));
+  await t.altarFor(maria);
+  await maria.call('POST', `/ofrendas/${id}/invites`, { email: 'sam@example.com' });
+  await sam.call('POST', '/invites/accept', { token: await t.tokenFrom('sam@example.com', /#i=([\w-]{43})/) });
+  const refused = await maria.json('DELETE', '/me', { email: 'maria@example.com' });
+  assert.deepEqual([refused.status, refused.body.error, refused.body.owned, refused.body.sharedWith], [409, 'owns_ofrendas', 2, 1]);
+  assert.equal((await maria.json('DELETE', '/me', { email: 'maria@example.com', deleteOfrendas: 'yes' })).status, 409, 'only a real true counts');
+  assert.equal((await maria.call('GET', '/me')).status, 200, 'refusals change nothing');
+  assert.equal((await maria.call('DELETE', '/me', { email: 'maria@example.com', deleteOfrendas: true })).status, 200);
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM altars').get().n, 0);
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM altar_members').get().n, 0);
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).status, 404);
+  assert.equal((await sam.json('GET', '/me')).body.altars.length, 0);
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM users').get().n, 1, 'only Sam remains');
+});
+
+test('delete account: payment records stay without personal data, and a later refund is harmless', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  await deliver(t, paidPI({ client_reference_id: maria.id, metadata: { feature: 'platinum' } }, 'pi_plat'));
+  assert.equal((await maria.call('DELETE', '/me', { email: 'maria@example.com' })).status, 200);
+  const rows = t.db.prepare('SELECT * FROM purchases').all();
+  assert.equal(rows.length, 1);
+  assert.ok(!JSON.stringify(rows).includes('maria'));
+  assert.equal((await deliver(t, refund('pi_plat'))).status, 200);
+});
+
+test('housekeeping: expired sign-in records, sessions and email-change codes are cleared out by later sign-ins', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  await maria.call('POST', '/me/email', { email: 'new@example.com' });
+  const n = table => t.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n;
+  assert.deepEqual([n('login_challenges'), n('email_changes')], [1, 1]);
+  await t.advance(2 * DAY);
+  await t.call('POST', '/auth/start', { body: { email: 'other@example.com' } });
+  assert.equal(n('login_challenges'), 1, 'only the new one is left');
+  assert.equal(n('email_changes'), 0);
+  await t.advance(t.RULES.sessionTtl + DAY);
+  await t.call('POST', '/auth/start', { body: { email: 'other@example.com' } });
+  assert.equal(n('sessions'), 0);
+});
+
+// ---------- vanity names ----------
+
+test('names: only the owner picks one, it must be well formed, and it points back to the same ofrenda', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const sam = await t.signIn('sam@example.com');
+  const id = await t.altarFor(maria, altar(frame('a', png())));
+  const put = (who, slug, ofrenda = id) => who.json('PUT', `/ofrendas/${ofrenda}/slug`, { slug });
+  assert.equal((await t.call('PUT', `/ofrendas/${id}/slug`, { body: { slug: 'abuela-rosa' } })).status, 401);
+  assert.equal((await put(sam, 'abuela-rosa')).status, 403, 'not a member');
+  await maria.call('POST', `/ofrendas/${id}/invites`, { email: 'sam@example.com' });
+  await sam.call('POST', '/invites/accept', { token: await t.tokenFrom('sam@example.com', /#i=([\w-]{43})/) });
+  assert.equal((await put(sam, 'abuela-rosa')).status, 403, 'a co-keeper cannot');
+  for (const bad of ['ab', 'a'.repeat(41), 'Abuela_Rosa', 'abuela--rosa', '-abuela', 'abuela-', 'abuela rosa', 'abuela/rosa', '..', 'abcdefghijkl', 'abcd2345wxyz', '', null, 5, undefined]) {
+    assert.equal((await put(maria, bad)).body.error ?? 'ok', 'bad_name', String(bad));
+  }
+  const ok = await put(maria, '  Abuela-Rosa ');
+  assert.deepEqual([ok.status, ok.body], [200, { slug: 'abuela-rosa' }], 'trimmed and lower-cased');
+  const found = await t.call('GET', '/ofrendas/by-name/abuela-rosa');
+  assert.deepEqual([found.status, await found.json()], [200, { id, slug: 'abuela-rosa' }]);
+  assert.equal((await t.call('GET', '/ofrendas/by-name/nobody-here')).status, 404);
+  assert.equal((await t.call('GET', '/ofrendas/by-name/Abuela_Rosa')).status, 404);
+  assert.equal((await t.call('GET', '/ofrendas/by-name/abuela-rosa', { origin: null })).status, 200, 'public');
+  // The id link still works, and members see the name.
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).status, 200);
+  assert.equal((await maria.json('GET', '/me')).body.altars[0].slug, 'abuela-rosa');
+  assert.equal((await sam.json('GET', `/ofrendas/${id}/team`)).body.slug, 'abuela-rosa');
+  assert.equal((await maria.json('GET', `/ofrendas/${id}/team`)).body.slug, 'abuela-rosa');
+  assert.equal((await t.call('PUT', `/ofrendas/${id}/slug`, { body: { slug: 'x-y-z' }, cookie: maria.cookie, origin: 'https://evil.test' })).status, 403, 'CSRF');
+});
+
+test('names: taken names stay taken, even after the owner moves on, and an owner may take an old one back', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const sam = await t.signIn('sam@example.com');
+  const a = await t.altarFor(maria);
+  const b = await t.altarFor(sam);
+  const set = (who, id, slug) => who.json('PUT', `/ofrendas/${id}/slug`, { slug });
+  assert.equal((await set(maria, a, 'abuela-rosa')).status, 200);
+  assert.equal((await set(sam, b, 'abuela-rosa')).body.error, 'name_taken');
+  assert.equal((await set(maria, a, 'abuela-rosa')).status, 200, 'saying it again is harmless');
+  t.tick(1000);
+  assert.equal((await set(maria, a, 'rosa-2024')).status, 200);
+  assert.equal((await set(sam, b, 'abuela-rosa')).body.error, 'name_taken', 'her old name is still hers, so shared links cannot be taken over');
+  assert.equal((await (await t.call('GET', '/ofrendas/by-name/abuela-rosa')).json()).slug, 'rosa-2024', 'old name works and reports the current one');
+  t.tick(1000);
+  assert.equal((await set(maria, a, 'abuela-rosa')).status, 200);
+  assert.equal((await maria.json('GET', '/me')).body.altars[0].slug, 'abuela-rosa', 'taken back as the current name');
+  // At most slugsPerAltar names in a lifetime.
+  for (let i = 0; i < t.RULES.slugsPerAltar - 2; i++) { t.tick(1000); assert.equal((await set(maria, a, `name-${i}`)).status, 200); }
+  assert.equal((await set(maria, a, 'one-too-many')).body.error, 'too_many_names');
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM altar_slugs WHERE altar_id = ?').get(a).n, t.RULES.slugsPerAltar);
+});
+
+test('names: two people claiming the same name at once get one winner, and deleting the ofrenda or account frees it', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const sam = await t.signIn('sam@example.com');
+  const a = await t.altarFor(maria);
+  const b = await t.altarFor(sam);
+  const results = await Promise.all([maria.call('PUT', `/ofrendas/${a}/slug`, { slug: 'same-name' }), sam.call('PUT', `/ofrendas/${b}/slug`, { slug: 'same-name' })]);
+  assert.deepEqual(results.map(r => r.status).sort(), [200, 409]);
+  const winner = results[0].status === 200 ? maria : sam;
+  const winnerId = winner === maria ? a : b;
+  const loser = winner === maria ? sam : maria;
+  const loserId = winner === maria ? b : a;
+  assert.equal((await winner.call('DELETE', `/ofrendas/${winnerId}`)).status, 200);
+  assert.equal((await t.call('GET', '/ofrendas/by-name/same-name')).status, 404, 'gone with the ofrenda');
+  assert.equal((await loser.call('PUT', `/ofrendas/${loserId}/slug`, { slug: 'same-name' })).status, 200, 'and free again');
+  assert.equal((await loser.call('DELETE', '/me', { email: loser.email, deleteOfrendas: true })).status, 200);
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM altar_slugs').get().n, 0, 'deleting an account takes its names too');
+});
+
+test('names: a handover keeps the name, and a name never shadows a real id', async () => {
+  const t = await setup();
+  const { owner, heir, id } = await t.heirScenario();
+  await owner.call('PUT', `/ofrendas/${id}/slug`, { slug: 'for-the-family' });
+  await t.advance(t.RULES.inactiveAfter + DAY, [heir]);
+  assert.equal((await heir.call('POST', `/ofrendas/${id}/claim`)).status, 201);
+  await t.advance(t.RULES.claimWait + DAY, [heir]);
+  assert.equal((await heir.call('POST', `/ofrendas/${id}/claim/complete`)).status, 200);
+  assert.equal((await (await t.call('GET', '/ofrendas/by-name/for-the-family')).json()).id, id);
+  assert.equal((await heir.call('PUT', `/ofrendas/${id}/slug`, { slug: 'new-owner-name' })).status, 200, 'the new owner can rename it');
+  const formerOwner = await t.signIn('owner@example.com');
+  assert.equal((await formerOwner.call('PUT', `/ofrendas/${id}/slug`, { slug: 'old-owner-name' })).status, 403, 'the old owner is now a co-keeper');
+  // An id-shaped string is refused as a name, so /a/<id> always means that id.
+  assert.equal((await heir.json('PUT', `/ofrendas/${id}/slug`, { slug: id })).body.error, 'bad_name');
 });

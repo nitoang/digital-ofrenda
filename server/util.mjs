@@ -68,3 +68,12 @@ export function normalizeEmail(v) {
 
 export const isResponse = v => v instanceof Response;
 export const day = ms => new Date(ms).toISOString().slice(0, 10);
+
+// A vanity name: 3 to 40 lower-case letters and digits, single hyphens between them. Never the shape of a real
+// ofrenda id (12 characters of a-z and 2-7), so a name can never be mistaken for, or collide with, an id.
+export function normalizeSlug(v) {
+  if (typeof v !== 'string') return null;
+  const s = v.trim().toLowerCase();
+  if (s.length < 3 || s.length > 40 || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(s) || /^[a-z2-7]{12}$/.test(s)) return null;
+  return s;
+}

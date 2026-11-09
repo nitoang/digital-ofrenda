@@ -31,7 +31,12 @@ export function frame(me, ...content) {
   return [
     h('header', { class: 'top' }, link('Digital Ofrenda', '/', { class: 'brand' }), nav),
     h('main', { id: 'main' }, ...content),
+    footer(),
   ];
+}
+
+export function footer() {
+  return h('footer', { class: 'foot' }, link('Privacy', '/privacy'), link('Terms', '/terms'));
 }
 
 // A message area that screen readers announce.

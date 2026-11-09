@@ -13,5 +13,9 @@ export const RULES = Object.freeze({
   maxKeepers: 10,                      // co-keepers plus pending invites, per altar
   invitesPerEmailPerDay: 3,
   inactiveAfter: 180 * DAY,            // owner silence before a successor may start a takeover request
+  slugsPerAltar: 5,                    // names one ofrenda may have used, including the current one
+  emailChangeTtl: 15 * MINUTE,         // the code sent to a new address
+  emailChangeAttempts: 5,
+  emailChangesPerHour: 5,
   claimWait: 30 * DAY,                 // notice period; the owner signing in at any point cancels it
 });

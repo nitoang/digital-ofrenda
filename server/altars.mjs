@@ -1,7 +1,7 @@
 // Creating, reading, saving and deleting altars. Saving applies validateOfrenda with entitlements read from
 // OUR database (per-altar upgrades, or the owner's platinum plan), never from the request.
 
-import { json, readBody, newId, isResponse } from './util.mjs';
+import { json, readBody, readJson, newId, isResponse, normalizeSlug } from './util.mjs';
 import { validateOfrenda, FEATURES } from './validate.mjs';
 import * as store from './store.mjs';
 import { requireUser } from './auth.mjs';
@@ -58,6 +58,29 @@ export async function handleDelete(request, env, deps, id) {
   if ((await store.getRole(env.DB, id, s.user.id)) !== 'owner') return json({ error: 'forbidden' }, 403);
   await store.deleteAltar(env.DB, id);
   return json({ ok: true });
+}
+
+// Public: which ofrenda does this vanity name point to? Anyone with the name can already view it, so this says nothing new.
+export async function handleByName(env, name) {
+  const slug = normalizeSlug(name);
+  const id = slug && (await store.altarIdForSlug(env.DB, slug));
+  return id ? json({ id, slug: await store.currentSlug(env.DB, id) }, 200, { 'cache-control': 'no-store' }) : json({ error: 'not_found' }, 404);
+}
+
+// The owner picks the name. It is only an extra address: the original link keeps working, and so do the
+// owner's earlier names.
+export async function handleSetSlug(request, env, deps, id) {
+  const s = await requireUser(request, env, deps);
+  if (isResponse(s)) return s;
+  if ((await store.getRole(env.DB, id, s.user.id)) !== 'owner') return json({ error: 'forbidden' }, 403);
+  const body = await readJson(request);
+  if (isResponse(body)) return body;
+  const slug = normalizeSlug(body.slug);
+  if (!slug) return json({ error: 'bad_name', message: 'Use 3 to 40 letters, numbers and single hyphens, like abuela-rosa.' }, 400);
+  const r = await store.setSlug(env.DB, { altarId: id, slug, now: deps.now(), max: RULES.slugsPerAltar });
+  if (r === 'taken') return json({ error: 'name_taken', message: 'That name is already used. Try another.' }, 409);
+  if (r === 'limit') return json({ error: 'too_many_names', message: `An ofrenda can use up to ${RULES.slugsPerAltar} names over its life, counting old ones. Take one of them back instead.` }, 409);
+  return json({ slug });
 }
 
 // What the signed-in page needs: who I am, my altars, and any takeover I could start or have started.

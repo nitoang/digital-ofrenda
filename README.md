@@ -93,12 +93,13 @@ Nothing here needs a scheduled job; each step is a request someone makes.
 
 **Payments.** Purchases are one-time and use Stripe Checkout, so card details never touch this code.
 - `POST /checkout {feature, altarId?}` (signed in) asks Stripe for a Checkout page and returns its address. The page never chooses a price, a reference or any metadata: the Worker reads the Price ids from its settings and sets them itself. `extraPhotos` and `sevenTiers` are bought for one altar, by its **owner** (`client_reference_id` is the altar id); `platinum` is bought for the signed-in account (`client_reference_id` is the user id). Buying something you already have is refused, so nobody pays twice by accident, and the browser will only ever follow an address on `checkout.stripe.com`.
-- The Stripe webhook (`checkout.session.completed` with `payment_status` "paid", or `checkout.session.async_payment_succeeded` for delayed payment methods; signature and timestamp verified) unlocks what was bought, keyed by the `client_reference_id` and `metadata.feature` the Worker set. A missing or unknown feature unlocks nothing, and refunds never delete what an altar already has.
+- The Stripe webhook (`checkout.session.completed` with `payment_status` "paid", or `checkout.session.async_payment_succeeded` for delayed payment methods; signature and timestamp verified) unlocks what was bought, keyed by the `client_reference_id` and `metadata.feature` the Worker set. A missing or unknown feature unlocks nothing, and every payment we act on is recorded (payment id, what it bought, for what; no personal data).
+- **Refunds.** On `charge.refunded` with `refunded: true` (a full refund; partial ones change nothing) the upgrade that payment bought is removed: Platinum from the account, or the altar's feature. If someone paid twice and only one payment was refunded, the other still covers it. What an altar already holds is kept; its next save is just held to the free limits again. A refund Stripe reports for a payment we have no record of is traced through the metadata Checkout put on it, and anything untraceable does nothing.
 - Coming back from Stripe, the page may arrive a moment before the webhook does, so it waits (up to about 30 seconds) for the upgrade to appear, then reloads with it switched on.
 
 Set up Stripe once (use test mode first):
 1. In the dashboard create three **one-time** Prices (extra photos, seven tiers, Platinum). Put their ids in `STRIPE_PRICE_EXTRA_PHOTOS`, `STRIPE_PRICE_SEVEN_TIERS` and `STRIPE_PRICE_PLATINUM` (see `server/wrangler.example.toml`), and your secret key in `wrangler secret put STRIPE_SECRET_KEY`. Until these are set, the buy buttons say purchases are not open yet.
-2. Add a webhook endpoint at `https://<your site>/stripe/webhook` for the events `checkout.session.completed` and `checkout.session.async_payment_succeeded`, and store its signing secret as `STRIPE_WEBHOOK_SECRET`.
+2. Add a webhook endpoint at `https://<your site>/stripe/webhook` for the events `checkout.session.completed`, `checkout.session.async_payment_succeeded` and `charge.refunded`, and store its signing secret as `STRIPE_WEBHOOK_SECRET`.
 3. Try it end to end with the Stripe CLI (`stripe listen --forward-to <your site>/stripe/webhook`) and a test card before going live.
 4. Tax, currency and receipts are Stripe settings; this code does not turn on automatic tax. Add a Cloudflare rate-limiting rule for `POST /checkout`.
 
@@ -109,7 +110,20 @@ Setup you do once:
 - **Rate limits:** add Cloudflare rate-limiting rules on `POST /auth/start`, `/auth/code` and `/auth/redeem`.
 - Tune the numbers in `server/rules.mjs`.
 
-Not built: refunds (clearing an upgrade is a manual step), changing an account's email address, deleting an account, and custom names. Email addresses are stored in plain text because they have to be emailed, so publish a privacy policy.
+**Your account.** On the My ofrendas page a person can change their email or delete their account.
+- `POST /me/email {email}` sends a 6-digit code to the **new** address and `POST /me/email/confirm {code}` switches it (15 minutes, five guesses, five codes an hour). Nothing changes before the code is entered. On success every other device is signed out and the old address is told, so a stolen session cannot quietly move an account away from its owner. Invitations and a successor naming the old address stay bound to it.
+- `DELETE /me {email, deleteOfrendas?}` needs the email typed back. If the person owns ofrendas it is refused (409, with counts) until they say `deleteOfrendas: true`, which deletes those ofrendas for their co-keepers too. It removes the user, sessions, memberships, sign-in records and invitations to or from them, and the successor rows naming them. Payment records stay; they hold no personal data.
+- Expired sign-in records, sessions and email-change codes are deleted by later sign-in requests; there is no scheduled job.
+
+**Privacy policy and terms** are `site/privacy.html` and `site/terms.html`, linked from every page. They describe what this code actually does, but they are a draft: put your contact address where they say `[your contact email]`, and have them read by someone who can advise on your jurisdiction (governing law, refund policy and children's data rules are not covered). If you change what is stored or who processes it, change the policy too.
+
+**Vanity names.** The owner can give an ofrenda a name in its address, so `/a/abuela-rosa` opens the same ofrenda as `/a/<id>`. On the Keepers page, under "A name in the address".
+- `PUT /ofrendas/:id/slug {slug}` (owner only) and the public `GET /ofrendas/by-name/:name` -> `{id, slug}`. A name is 3 to 40 lower-case letters and digits with single hyphens (it is trimmed and lower-cased), and can never look like a real id (12 characters of a-z and 2-7), so `/a/<x>` is never ambiguous.
+- The id link keeps working. Every name an ofrenda has had is kept and still opens it, so links already shared never break and nobody else can take a name over after the owner moves on; one ofrenda can use at most 5 names in its life (`RULES.slugsPerAltar`), and an owner can take an old one back. Deleting the ofrenda or the account frees its names. A handover keeps them, and the new owner can rename.
+- Names are free, and on purpose not a paid upgrade. **A name makes an ofrenda easy to guess**, so the page says so, and the privacy page does too. Nothing filters offensive or impersonating names: if you want that, add a blocklist in `normalizeSlug` (`server/util.mjs`).
+- Needs migration `0003`. The `/ofrendas/*` Worker route already covers it.
+
+Not built: Stripe automatic tax (a decision, not code). Email addresses are stored in plain text because they have to be emailed.
 
 ### The website (`site/`)
 
@@ -130,7 +144,7 @@ How it behaves:
 - Emailed tokens are kept out of URLs: they arrive after the `#`, are removed from the address bar at once, and wait in session storage only while the person signs in.
 - The upgrade dialog explains an option and starts the purchase. A co-keeper sees "ask the owner" instead of a buy button, since only owners can buy for an altar. Platinum is offered alongside the per-altar upgrade.
 
-**Deploying (Cloudflare Pages + Worker, one hostname).** Build command `npm run build:site`, output directory `site`. Then give the Worker these paths on the same hostname, so the page and the API share one origin: `/auth/*`, `/me`, `/ofrendas`, `/ofrendas/*`, `/invites/*`, `/successor/*`, `/stripe/*`. Pages serves everything else (note `/successor` with nothing after it is a page). Set your Turnstile site key in `site/config.js`. Cloudflare's Turnstile documentation lists the exact content-security-policy entries it needs; `site/_headers` allows the usual ones, so check them against the current docs.
+**Deploying (Cloudflare Pages + Worker, one hostname).** Build command `npm run build:site`, output directory `site`. Then give the Worker these paths on the same hostname, so the page and the API share one origin: `/auth/*`, `/me`, `/me/*`, `/ofrendas`, `/ofrendas/*`, `/invites/*`, `/successor/*`, `/stripe/*`. Pages serves everything else (note `/successor` with nothing after it is a page). Set your Turnstile site key in `site/config.js`. Cloudflare's Turnstile documentation lists the exact content-security-policy entries it needs; `site/_headers` allows the usual ones, so check them against the current docs.
 
 **Try it locally:** `npm run dev`, then open http://localhost:8787. It runs the real pages and the real Worker code on a throwaway in-memory database, and prints the emails (with your sign-in code) in the terminal. Everything resets when you stop it.
 

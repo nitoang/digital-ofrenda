@@ -1,6 +1,7 @@
 import { api, getMe, describe } from './api.js';
 import { h, mount, frame, messages, link, date, signOut, busy } from './ui.js';
 import { showUpgrade } from './upgrade.js';
+import { accountSection } from './account.js';
 import { purchaseReturn, waitUntil, WAITING, SLOW, CANCELLED } from './purchase.js';
 
 const root = document.getElementById('app');
@@ -48,9 +49,8 @@ async function render(note) {
   mount(root, frame(me,
     h('h1', {}, 'My ofrendas', me.plan === 'platinum' ? h('span', { class: 'badge' }, 'Platinum') : null),
     h('p', {}, create), msg.el, mine, heirs,
-    h('h2', {}, 'Your account'),
-    h('p', { class: 'muted' }, 'Signed in as ', h('strong', {}, me.email), '.'),
-    h('p', { class: 'actions' }, signOutButton(false), signOutButton(true))));
+    h('p', { class: 'actions' }, signOutButton(false), signOutButton(true)),
+    accountSection(me, text => render(text))));
 }
 
 function signOutButton(everywhere) {
