@@ -1188,24 +1188,24 @@ test('delete account: needs sign-in and the email typed back, then removes the p
   assert.equal((await fresh.json('GET', '/me')).body.altars.length, 0);
 });
 
-test('delete account: owned ofrendas are only deleted when the person says so, and take their co-keepers\' access with them', async () => {
+test('delete account: ofrendas other people keep are passed on to them; only ones nobody else keeps are deleted, and only when the person says so', async () => {
   const t = await setup();
   const maria = await t.signIn('maria@example.com');
   const sam = await t.signIn('sam@example.com');
   const id = await t.altarFor(maria, altar(frame('a', png())));
-  await t.altarFor(maria);
+  const solo = await t.altarFor(maria);
   await maria.call('POST', `/ofrendas/${id}/invites`, { email: 'sam@example.com' });
   await sam.call('POST', '/invites/accept', { token: await t.tokenFrom('sam@example.com', /#i=([\w-]{43})/) });
   const refused = await maria.json('DELETE', '/me', { email: 'maria@example.com' });
-  assert.deepEqual([refused.status, refused.body.error, refused.body.owned, refused.body.sharedWith], [409, 'owns_ofrendas', 2, 1]);
+  assert.deepEqual([refused.status, refused.body.error, refused.body.owned, refused.body.handedOn], [409, 'owns_ofrendas', 1, 1]);
   assert.equal((await maria.json('DELETE', '/me', { email: 'maria@example.com', deleteOfrendas: 'yes' })).status, 409, 'only a real true counts');
   assert.equal((await maria.call('GET', '/me')).status, 200, 'refusals change nothing');
   assert.equal((await maria.call('DELETE', '/me', { email: 'maria@example.com', deleteOfrendas: true })).status, 200);
-  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM altars').get().n, 0);
-  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM altar_members').get().n, 0);
-  assert.equal((await t.call('GET', `/ofrendas/${id}`)).status, 404);
-  assert.equal((await sam.json('GET', '/me')).body.altars.length, 0);
+  assert.equal((await t.call('GET', `/ofrendas/${solo}`)).status, 404, 'the one nobody else keeps is gone');
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).status, 200, 'the shared one is not erased');
+  assert.deepEqual((await sam.json('GET', '/me')).body.altars.map(a => [a.id, a.role]), [[id, 'owner']]);
   assert.equal(t.db.prepare('SELECT COUNT(*) n FROM users').get().n, 1, 'only Sam remains');
+  assert.ok((await t.mailTo('sam@example.com')).some(m => /now own/i.test(m.subject)));
 });
 
 test('delete account: payment records stay without personal data, and a later refund is harmless', async () => {
@@ -1415,4 +1415,98 @@ test('successor access: removing the successor ends it, but a separately invited
 test('a year of silence is the rule', async () => {
   const { RULES } = await import('../server/rules.mjs');
   assert.equal(RULES.inactiveAfter, 365 * DAY);
+});
+
+
+// ---------- multiple owners ----------
+async function twoOwners(t) {
+  const a = await t.signIn('a@example.com'), b = await t.signIn('b@example.com');
+  const id = await t.altarFor(a, altar(frame('x', png())));
+  await a.call('POST', `/ofrendas/${id}/invites`, { email: 'b@example.com' });
+  await b.call('POST', '/invites/accept', { token: await t.tokenFrom('b@example.com', /#i=([\w-]{43})/) });
+  t.db.prepare("UPDATE altar_members SET role = 'owner' WHERE altar_id = ? AND user_id = ?").run(id, b.id);
+  return { a, b, id };
+}
+
+test('multiple owners: they cannot remove each other, either can step away, and the last one cannot just leave', async () => {
+  const t = await setup();
+  const { a, b, id } = await twoOwners(t);
+  const refused = await a.json('DELETE', `/ofrendas/${id}/members/${b.id}`);
+  assert.deepEqual([refused.status, refused.body.error], [403, 'owners_cannot_remove_owners']);
+  assert.equal((await b.json('DELETE', `/ofrendas/${id}/members/${a.id}`)).body.error, 'owners_cannot_remove_owners');
+  assert.equal((await a.call('DELETE', `/ofrendas/${id}/members/${a.id}`)).status, 200, 'an owner can step away themselves');
+  const last = await b.json('DELETE', `/ofrendas/${id}/members/${b.id}`);
+  assert.deepEqual([last.status, last.body.error], [400, 'owner_cannot_leave']);
+});
+
+test('multiple owners: deleting as one of several only steps you away; the last owner deleting an unshared ofrenda erases it', async () => {
+  const t = await setup();
+  const { a, b, id } = await twoOwners(t);
+  assert.equal((await a.json('DELETE', `/ofrendas/${id}`)).body.outcome, 'left');
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).status, 200);
+  assert.equal((await b.json('DELETE', `/ofrendas/${id}`)).body.outcome, 'deleted');
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).status, 404);
+});
+
+test('deleting as the last owner passes the ofrenda to the people who keep it, or to the named successor alone', async () => {
+  const t = await setup();
+  const owner = await t.signIn('owner@example.com'), k1 = await t.signIn('k1@example.com'), k2 = await t.signIn('k2@example.com');
+  const id = await t.altarFor(owner, altar(frame('a', png())));
+  for (const k of [k1, k2]) {
+    await owner.call('POST', `/ofrendas/${id}/invites`, { email: k.email });
+    await k.call('POST', '/invites/accept', { token: await t.tokenFrom(k.email, /#i=([\w-]{43})/) });
+  }
+  assert.equal((await owner.json('DELETE', `/ofrendas/${id}`)).body.outcome, 'passed');
+  assert.deepEqual((await k1.json('GET', '/me')).body.altars.map(x => x.role), ['owner']);
+  assert.deepEqual((await k2.json('GET', '/me')).body.altars.map(x => x.role), ['owner']);
+  assert.equal((await owner.json('GET', '/me')).body.altars.length, 0);
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).status, 200, 'never erased while others keep it');
+
+  const s = await t.heirScenario();
+  const other = await t.signIn('other@example.com');
+  await s.owner.call('POST', `/ofrendas/${s.id}/invites`, { email: other.email });
+  await other.call('POST', '/invites/accept', { token: await t.tokenFrom(other.email, /#i=([\w-]{43})/) });
+  assert.equal((await s.owner.json('DELETE', `/ofrendas/${s.id}`)).body.outcome, 'passed');
+  assert.equal((await s.heir.json('GET', '/me')).body.altars[0].role, 'owner');
+  assert.equal((await other.json('GET', '/me')).body.altars[0].role, 'keeper', 'the named successor, not everyone');
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM successors WHERE altar_id = ?').get(s.id).n, 0);
+});
+
+test('an ofrenda passed to someone already at the free limit is locked: viewable, not editable, never deleted, and upgrading unlocks it', async () => {
+  const t = await setup();
+  const giver = await t.signIn('giver@example.com'), full = await t.signIn('full@example.com');
+  const gift = await t.altarFor(giver, altar(frame('a', png())));
+  await giver.call('POST', `/ofrendas/${gift}/invites`, { email: full.email });
+  await full.call('POST', '/invites/accept', { token: await t.tokenFrom(full.email, /#i=([\w-]{43})/) });
+  t.tick(1000);
+  const mine = [];
+  for (let i = 0; i < t.RULES.freeAltars; i++) { mine.push(await t.altarFor(full)); t.tick(1000); }
+  await giver.call('DELETE', `/ofrendas/${gift}`);
+  t.tick(1000);
+  const me = (await full.json('GET', '/me')).body;
+  assert.equal(me.altars.length, t.RULES.freeAltars + 1);
+  assert.deepEqual(me.altars.filter(a => a.locked).map(a => a.id), [gift], 'the one passed on is the locked one');
+  assert.equal((await full.call('PUT', `/ofrendas/${mine[0]}`, altar(frame('a')))).status, 200, 'their own ofrendas still edit');
+  const blocked = await full.json('PUT', `/ofrendas/${gift}`, altar(frame('a')));
+  assert.deepEqual([blocked.status, blocked.body.error, blocked.body.upgrade], [402, 'ofrenda_locked', 'platinum']);
+  assert.equal((await t.call('GET', `/ofrendas/${gift}`)).status, 200, 'visitors can still view it');
+  assert.ok((await t.mailTo(full.email)).some(m => /waiting for an upgrade/.test(m.subject)));
+  t.db.prepare("UPDATE users SET plan = 'platinum' WHERE id = ?").run(full.id);
+  assert.equal((await full.call('PUT', `/ofrendas/${gift}`, altar(frame('a')))).status, 200, 'upgrading unlocks it');
+  t.db.prepare("UPDATE users SET plan = NULL WHERE id = ?").run(full.id);
+  assert.equal((await full.call('DELETE', `/ofrendas/${mine[1]}`)).status, 200);
+  assert.equal((await full.call('PUT', `/ofrendas/${gift}`, altar(frame('a')))).status, 200, 'making room unlocks it too');
+});
+
+test('multiple owners: platinum on any owner covers the ofrenda, and a takeover needs every owner to have gone quiet', async () => {
+  const t = await setup();
+  const { a, b, id } = await twoOwners(t);
+  t.db.prepare("UPDATE users SET plan = 'platinum' WHERE id = ?").run(b.id);
+  assert.ok(Object.values((await a.json('GET', `/ofrendas/${id}/team`)).body.entitlements).every(Boolean));
+  const heir = await t.signIn('heir@example.com');
+  await a.call('PUT', `/ofrendas/${id}/successor`, { email: heir.email });
+  await heir.call('POST', '/successor/accept', { token: await t.tokenFrom(heir.email, /#s=([\w-]{43})/) });
+  await t.advance(t.RULES.inactiveAfter + DAY, [heir, b]);
+  const early = await heir.json('POST', `/ofrendas/${id}/claim`);
+  assert.deepEqual([early.status, early.body.error], [403, 'owner_active'], 'one owner is still around');
 });

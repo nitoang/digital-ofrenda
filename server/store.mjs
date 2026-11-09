@@ -24,20 +24,19 @@ export async function setPlan(db, id, plan) {
 export const clearPlan = (db, id) => run(db, "UPDATE users SET plan = NULL WHERE id = ? AND plan = 'platinum'", id);
 
 // Everything about a person goes in one transaction: their sessions, memberships, invitations they sent,
-// successor and takeover rows (all by cascade), the sign-in records and invitations addressed to their email,
-// and, only if asked, the ofrendas they own. Payment records hold no personal data and stay.
-export const deleteAccount = (db, { userId, email, withOfrendas }) => db.batch([
-  ...(withOfrendas ? [stmt(db, "DELETE FROM altars WHERE id IN (SELECT altar_id FROM altar_members WHERE user_id = ? AND role = 'owner')", userId)] : []),
+// successor and takeover rows (all by cascade), and the sign-in records and invitations addressed to their email.
+// Ofrendas they own are dealt with first (owners.mjs): passed on to the people who keep them, or deleted if nobody does.
+// Payment records hold no personal data and stay.
+export const deleteAccount = (db, { userId, email }) => db.batch([
   stmt(db, 'DELETE FROM login_challenges WHERE email = ?', email),
   stmt(db, 'DELETE FROM invites WHERE email = ?', email),
   stmt(db, 'DELETE FROM successors WHERE email = ?', email),
   stmt(db, 'DELETE FROM users WHERE id = ?', userId),
 ]);
-export const ownedAltarSummary = async (db, userId) => {
-  const r = await one(db, `SELECT COUNT(*) AS n, COALESCE(SUM((SELECT COUNT(*) FROM altar_members o WHERE o.altar_id = m.altar_id AND o.user_id != m.user_id)), 0) AS others
+// The ofrendas this person owns, and how many other people are on each.
+export const ownedAltars = (db, userId) =>
+  all(db, `SELECT m.altar_id AS id, (SELECT COUNT(*) FROM altar_members o WHERE o.altar_id = m.altar_id AND o.user_id != m.user_id) AS others
     FROM altar_members m WHERE m.user_id = ? AND m.role = 'owner'`, userId);
-  return { owned: Number(r.n), withOthers: Number(r.others) };
-};
 
 // ---------- changing an email address ----------
 // Starts (or restarts) a change. False when this person has asked too often this hour.
@@ -134,8 +133,42 @@ export const deleteAltar = (db, id) => run(db, 'DELETE FROM altars WHERE id = ?'
 export async function getRole(db, altarId, userId) {
   return (await one(db, 'SELECT role FROM altar_members WHERE altar_id = ? AND user_id = ?', altarId, userId))?.role ?? null;
 }
-export const getOwner = (db, altarId) =>
-  one(db, "SELECT u.id, u.email, u.plan, u.last_seen_at FROM altar_members m JOIN users u ON u.id = m.user_id WHERE m.altar_id = ? AND m.role = 'owner'", altarId);
+export const getOwners = (db, altarId) =>
+  all(db, "SELECT u.id, u.email, u.plan, u.last_seen_at FROM altar_members m JOIN users u ON u.id = m.user_id WHERE m.altar_id = ? AND m.role = 'owner' ORDER BY m.added_at, u.email", altarId);
+
+// A free account owns up to `limit` ofrendas. When it ends up with more (an ofrenda was passed on to it), the
+// newest ones are locked: viewable, but not editable until the person upgrades or makes room. Worked out each
+// time from the memberships, so there is nothing to keep in step: upgrading or deleting another ofrenda unlocks.
+export async function ownerLocked(db, altarId, userId, limit) {
+  const me = await one(db, "SELECT m.added_at, u.plan FROM altar_members m JOIN users u ON u.id = m.user_id WHERE m.altar_id = ? AND m.user_id = ? AND m.role = 'owner'", altarId, userId);
+  if (!me || me.plan === 'platinum') return false;
+  const before = await one(db, "SELECT COUNT(*) AS n FROM altar_members WHERE user_id = ? AND role = 'owner' AND (added_at < ? OR (added_at = ? AND altar_id < ?))", userId, me.added_at, me.added_at, altarId);
+  return Number(before.n) >= limit;
+}
+// Keepers edit through the owners: the ofrenda is locked for them only if every owner is locked.
+export async function altarLockedFor(db, altarId, userId, limit) {
+  const role = await getRole(db, altarId, userId);
+  if (role === 'owner') return ownerLocked(db, altarId, userId, limit);
+  const owners = await getOwners(db, altarId);
+  for (const o of owners) if (!(await ownerLocked(db, altarId, o.id, limit))) return false;
+  return owners.length > 0;
+}
+
+// An owner steps away while another owner remains. False if they are the last owner (the guard is in the SQL).
+export async function leaveAsOwner(db, altarId, userId) {
+  return (await run(db, `DELETE FROM altar_members WHERE altar_id = ? AND user_id = ? AND role = 'owner'
+    AND (SELECT COUNT(*) FROM altar_members WHERE altar_id = ? AND role = 'owner') > 1`, altarId, userId, altarId)).meta.changes > 0;
+}
+// The last owner leaves and the people who keep the ofrenda become its owners. They join the end of their own
+// list (added_at = now), so an ofrenda passed to them never pushes an older one of theirs into the locked part.
+export const passOn = (db, { altarId, fromUserId, heirIds, now, grants }) => db.batch([
+  ...heirIds.map(id => stmt(db, `INSERT INTO altar_members (altar_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?)
+    ON CONFLICT (altar_id, user_id) DO UPDATE SET role = 'owner', via_successor = 0, added_at = excluded.added_at`, altarId, id, now)),
+  stmt(db, 'DELETE FROM altar_members WHERE altar_id = ? AND user_id = ?', altarId, fromUserId),
+  stmt(db, 'DELETE FROM successors WHERE altar_id = ?', altarId),
+  stmt(db, 'UPDATE claims SET cancelled_at = ? WHERE altar_id = ? AND cancelled_at IS NULL AND completed_at IS NULL', now, altarId),
+  ...grants.map(name => stmt(db, 'INSERT OR IGNORE INTO features (altar_id, name, granted_at) VALUES (?, ?, ?)', altarId, name, now)),
+]);
 export const altarsForUser = (db, userId) =>
   all(db, `SELECT m.altar_id AS id, m.role, (SELECT slug FROM altar_slugs s WHERE s.altar_id = m.altar_id ORDER BY s.created_at DESC, s.rowid DESC LIMIT 1) AS slug
     FROM altar_members m WHERE m.user_id = ? ORDER BY m.added_at, m.altar_id`, userId);
@@ -160,8 +193,8 @@ export async function setSlug(db, { altarId, slug, now, max }) {
 
 // Upgrades bought for this altar, plus everything if its owner has the platinum plan.
 export async function getEntitlements(db, altarId, names) {
-  const owner = await getOwner(db, altarId);
-  if (owner?.plan === 'platinum') return Object.fromEntries(names.map(n => [n, true]));
+  const platinum = await one(db, "SELECT 1 AS x FROM altar_members m JOIN users u ON u.id = m.user_id WHERE m.altar_id = ? AND m.role = 'owner' AND u.plan = 'platinum'", altarId);
+  if (platinum) return Object.fromEntries(names.map(n => [n, true]));
   const have = new Set((await all(db, 'SELECT name FROM features WHERE altar_id = ?', altarId)).map(r => r.name));
   return Object.fromEntries(names.map(n => [n, have.has(n)]));
 }
@@ -257,11 +290,11 @@ export const finishClaim = (db, { altarId, now }) =>
 // If the handover itself failed after the claim was marked finished, put the claim back so it can be retried.
 export const reopenClaim = (db, altarId) => run(db, 'UPDATE claims SET completed_at = NULL WHERE altar_id = ?', altarId);
 
-// One transaction: the old owner stays on as a co-keeper, the successor becomes owner, and any upgrades the
+// One transaction: the old owners stay on as co-keepers, the successor becomes owner, and any upgrades the
 // old owner's platinum plan was providing are written onto the altar so the family keeps them.
-export const handOver = (db, { altarId, oldOwnerId, newOwnerId, now, grants }) => db.batch([
-  stmt(db, "UPDATE altar_members SET role = 'keeper' WHERE altar_id = ? AND user_id = ? AND role = 'owner'", altarId, oldOwnerId),
-  stmt(db, "INSERT INTO altar_members (altar_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?) ON CONFLICT (altar_id, user_id) DO UPDATE SET role = 'owner', via_successor = 0", altarId, newOwnerId, now),
+export const handOver = (db, { altarId, newOwnerId, now, grants }) => db.batch([
+  stmt(db, "UPDATE altar_members SET role = 'keeper' WHERE altar_id = ? AND role = 'owner'", altarId), // every owner had gone quiet
+  stmt(db, "INSERT INTO altar_members (altar_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?) ON CONFLICT (altar_id, user_id) DO UPDATE SET role = 'owner', via_successor = 0, added_at = excluded.added_at", altarId, newOwnerId, now),
   stmt(db, 'DELETE FROM successors WHERE altar_id = ?', altarId),
   ...grants.map(name => stmt(db, 'INSERT OR IGNORE INTO features (altar_id, name, granted_at) VALUES (?, ?, ?)', altarId, name, now)),
 ]);

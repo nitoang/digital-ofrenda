@@ -66,7 +66,7 @@ function deleteAccount(me) {
   const go = h('button', { type: 'submit', class: 'danger' }, 'Delete my account');
   const form = h('form', { novalidate: true },
     h('h3', {}, 'Delete your account'),
-    h('p', { class: 'muted' }, 'This removes your account, your sign-in records, and your place on other people’s ofrendas. It cannot be undone. If you have Platinum or upgrades, they go with it, and we cannot move them to another account.'),
+    h('p', { class: 'muted' }, 'This removes your account, your sign-in records, and your place on other people’s ofrendas. Ofrendas that other people keep are passed on to them, not erased. It cannot be undone. If you have Platinum or upgrades, they go with it, and we cannot move them to another account.'),
     h('label', { for: 'confirm-email' }, 'To confirm, type your email address (', h('strong', {}, me.email), ')'), email, alsoRow, h('p', {}, go), msg.el);
   form.addEventListener('submit', ev => {
     ev.preventDefault();
@@ -78,8 +78,8 @@ function deleteAccount(me) {
       } catch (e) {
         if (e.status === 409 && e.body.error === 'owns_ofrendas') {
           alsoRow.hidden = false;
-          const n = e.body.owned, others = e.body.sharedWith;
-          msg.fail(`You own ${n} ${n === 1 ? 'ofrenda' : 'ofrendas'}${others ? `, and ${others} ${others === 1 ? 'other person helps' : 'other people help'} keep ${n === 1 ? 'it' : 'them'}` : ''}. Deleting your account deletes ${n === 1 ? 'it' : 'them'} for good. Tick the box to go ahead, or hand over ownership first.`);
+          const n = e.body.owned, passed = e.body.handedOn;
+          msg.fail(`${n === 1 ? 'One of your ofrendas has' : `${n} of your ofrendas have`} nobody else to keep ${n === 1 ? 'it' : 'them'}, so deleting your account deletes ${n === 1 ? 'it' : 'them'} for good.${passed ? ` The ${passed === 1 ? 'one' : passed} that other people keep ${passed === 1 ? 'is' : 'are'} passed on to them instead.` : ''} Tick the box to go ahead.`);
         } else msg.fail(e.status === 400 && e.body.message ? e.body.message : describe(e));
       }
     });

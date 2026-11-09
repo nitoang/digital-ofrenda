@@ -153,8 +153,14 @@ export async function handleAcceptInvite(request, env, deps) {
 export async function handleRemoveMember(request, env, deps, id, userId) {
   const s = await asRole(request, env, deps, id, ['owner', 'keeper']);
   if (isResponse(s)) return s;
-  if (userId === s.user.id && s.role === 'owner') return json({ error: 'owner_cannot_leave', message: 'Hand the ofrenda to someone else or delete it.' }, 400);
   if (userId !== s.user.id && s.role !== 'owner') return json({ error: 'forbidden' }, 403);
+  if (userId !== s.user.id && (await store.getRole(env.DB, id, userId)) === 'owner') {
+    return json({ error: 'owners_cannot_remove_owners', message: 'Owners can’t remove each other. Each owner can only step away themselves.' }, 403);
+  }
+  if (userId === s.user.id && s.role === 'owner') {
+    return (await store.leaveAsOwner(env.DB, id, userId)) ? json({ ok: true })
+      : json({ error: 'owner_cannot_leave', message: 'You are the only owner. Hand the ofrenda to someone else or delete it.' }, 400);
+  }
   return (await store.removeMember(env.DB, id, userId)) ? json({ ok: true }) : json({ error: 'not_found' }, 404);
 }
 
@@ -210,14 +216,14 @@ async function asSuccessor(request, env, deps, id) {
 export async function handleClaim(request, env, deps, id) {
   const s = await asSuccessor(request, env, deps, id);
   if (isResponse(s)) return s;
-  const owner = await store.getOwner(env.DB, id);
-  if (!owner || owner.id === s.user.id) return json({ error: 'not_found' }, 404);
+  const owners = await store.getOwners(env.DB, id);
+  if (!owners.length || owners.some(o => o.id === s.user.id)) return json({ error: 'not_found' }, 404);
   const now = deps.now();
-  const eligibleAt = owner.last_seen_at + RULES.inactiveAfter;
+  const eligibleAt = Math.max(...owners.map(o => o.last_seen_at)) + RULES.inactiveAfter; // every owner must have gone quiet
   if (now < eligibleAt) return json({ error: 'owner_active', eligibleAt }, 403);
   const executesAt = now + RULES.claimWait;
   if (!(await store.createClaim(env.DB, { altarId: id, requestedBy: s.user.id, now, executesAt }))) return json({ error: 'claim_in_progress' }, 409);
-  queueMail(deps, () => deps.mailer.send(claimNoticeMessage({ to: owner.email, from: s.user.email, executesAt })));
+  for (const o of owners) queueMail(deps, () => deps.mailer.send(claimNoticeMessage({ to: o.email, from: s.user.email, executesAt })));
   return json({ executesAt }, 201);
 }
 
@@ -241,23 +247,23 @@ export async function handleCompleteClaim(request, env, deps, id) {
   const s = await asSuccessor(request, env, deps, id);
   if (isResponse(s)) return s;
   const claim = await store.getClaim(env.DB, id);
-  const owner = await store.getOwner(env.DB, id);
-  if (!claim || claim.cancelled_at || claim.completed_at || !owner) return json({ error: 'no_claim' }, 409);
+  const owners = await store.getOwners(env.DB, id);
+  if (!claim || claim.cancelled_at || claim.completed_at || !owners.length) return json({ error: 'no_claim' }, 409);
   const now = deps.now();
   if (claim.requested_by !== s.user.id) return json({ error: 'forbidden' }, 403);
   if (now < claim.executes_at) return json({ error: 'too_early', executesAt: claim.executes_at }, 403);
-  if (owner.last_seen_at > claim.requested_at) { // belt and braces: activity normally cancels the claim already
+  if (owners.some(o => o.last_seen_at > claim.requested_at)) { // belt and braces: activity normally cancels the claim already
     await store.cancelClaim(env.DB, id, now);
     return json({ error: 'owner_active' }, 409);
   }
   if (!(await store.finishClaim(env.DB, { altarId: id, now }))) return json({ error: 'no_claim' }, 409);
   try {
-    await store.handOver(env.DB, { altarId: id, oldOwnerId: owner.id, newOwnerId: s.user.id, now, grants: owner.plan === 'platinum' ? FEATURES : [] });
+    await store.handOver(env.DB, { altarId: id, newOwnerId: s.user.id, now, grants: owners.some(o => o.plan === 'platinum') ? FEATURES : [] });
   } catch (e) {
     await store.reopenClaim(env.DB, id);
     throw e;
   }
-  queueMail(deps, () => deps.mailer.send(handoverMessage({ to: owner.email, role: 'keeper' })));
+  for (const o of owners) queueMail(deps, () => deps.mailer.send(handoverMessage({ to: o.email, role: 'keeper' })));
   queueMail(deps, () => deps.mailer.send(handoverMessage({ to: s.user.email, role: 'owner' })));
   return json({ ok: true, role: 'owner' });
 }
