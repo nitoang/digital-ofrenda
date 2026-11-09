@@ -14,7 +14,7 @@
 //                           STRIPE_PRICE_PLATINUM are the ids (price_...) of one-time Prices you create in Stripe
 //
 // Routes (JSON; everything except GET and the webhook must come from the APP_URL origin):
-//   POST /auth/start {email, turnstile} -> {challenge}     emails a link and a 6-digit code
+//   POST /auth/start {email, method, turnstile} -> {challenge}   method "link" or "code": emails just that one (omitted: both)
 //   POST /auth/redeem {token}                              the link; sets the session cookie
 //   POST /auth/code {challenge, code}                      the code; sets the session cookie
 //   POST /auth/logout, POST /auth/logout-all

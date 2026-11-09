@@ -29,7 +29,8 @@ async function visitor() {
 async function signIn(page, email, { from = site.sent.length } = {}) {
   if (!new URL(page.url()).pathname.startsWith('/signin')) await page.goto(site.url + '/signin');
   await page.getByLabel('Your email address').fill(email);
-  await page.getByRole('button', { name: 'Email me a code' }).click();
+  await page.getByLabel('Email me a 6-digit code').check();
+  await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByLabel('Code', { exact: true }).fill(await site.codeFor(email, from));
   await page.getByRole('button', { name: 'Sign in' }).click();
   await page.waitForURL(u => !u.pathname.startsWith('/signin'));
@@ -81,7 +82,8 @@ withSite('sign in with a code, land on My ofrendas, and sign out', async () => {
 
   // A wrong code is refused with a kind message; the right one signs in.
   await page.getByLabel('Your email address').fill('Maria@Example.com');
-  await page.getByRole('button', { name: 'Email me a code' }).click();
+  await page.getByLabel('Email me a 6-digit code').check();
+  await page.getByRole('button', { name: 'Continue' }).click();
   const code = await site.codeFor('maria@example.com');
   await assertLabelled(page);
   await page.getByLabel('Code', { exact: true }).fill(code === '123456' ? '654321' : '123456');
@@ -104,7 +106,8 @@ withSite('the emailed sign-in link needs a button press, and its token leaves th
   const { ctx, page } = await visitor();
   await page.goto(site.url + '/signin');
   await page.getByLabel('Your email address').fill('maria@example.com');
-  await page.getByRole('button', { name: 'Email me a code' }).click();
+  await page.getByRole('button', { name: 'Continue' }).click(); // the link is the default choice
+  await page.getByText('We sent a sign-in link').waitFor();
   const token = await site.linkFrom('maria@example.com', /signin#t=([\w-]{43})/);
   await page.goto(`${site.url}/signin#t=${token}`);
   const go = page.getByRole('button', { name: 'Continue to sign in' });

@@ -112,7 +112,7 @@ test('sign-in: start emails a link and a code, stores only hashes, and answers t
   // Known and unknown addresses get the same kind of answer.
   await t.signIn('maria@example.com');
   const again = await t.call('POST', '/auth/start', { body: { email: 'maria@example.com' } });
-  assert.deepEqual(Object.keys(await again.json()), ['challenge']);
+  assert.deepEqual(Object.keys(await again.json()), ['challenge', 'method']);
 });
 
 test('sign-in: the code signs you in once, with a hardened cookie that is stored hashed', async () => {
@@ -1361,4 +1361,31 @@ test('a share email never calls the loved one "My Ofrenda"', async () => {
   assert.equal(res.status, 201);
   const mail = (await t.mailTo('friend@example.com'))[0];
   assert.doesNotMatch(mail.subject + mail.text, /My Ofrenda/);
+});
+
+test('sign-in: the person chooses a link or a code, and only that one is emailed and usable', async () => {
+  const t = await setup();
+  // Link only: no code in the email or subject, and no code can be guessed for it.
+  const l = await (await t.call('POST', '/auth/start', { body: { email: 'link@example.com', method: 'link' } })).json();
+  assert.equal(l.method, 'link');
+  const [lm] = await t.mailTo('link@example.com');
+  assert.equal(lm.subject, 'Your Digifrenda sign-in link');
+  assert.doesNotMatch(lm.subject + lm.text, /\b\d{6}\b/);
+  for (let c = 0; c < 5; c++) assert.equal((await t.call('POST', '/auth/code', { body: { challenge: l.challenge, code: String(100000 + c) } })).status, 400);
+  const token = /#t=([\w-]{43})/.exec(lm.text)[1];
+  assert.equal((await t.call('POST', '/auth/redeem', { body: { token } })).status, 200);
+
+  // Code only: no link in the email, and no link token exists for it.
+  const c = await (await t.call('POST', '/auth/start', { body: { email: 'code@example.com', method: 'code' } })).json();
+  const [cm] = await t.mailTo('code@example.com');
+  assert.match(cm.subject, /^Your Digifrenda sign-in code is \d{6}$/);
+  assert.doesNotMatch(cm.text, /signin#t=|https?:\/\//);
+  const code = /(\d{6})/.exec(cm.subject)[1];
+  assert.equal((await t.call('POST', '/auth/code', { body: { challenge: c.challenge, code } })).status, 200);
+  assert.equal((await t.call('POST', '/auth/code', { body: { challenge: c.challenge, code } })).status, 400, 'code replay');
+
+  // Anything else is refused and sends nothing.
+  const bad = await t.call('POST', '/auth/start', { body: { email: 'x@example.com', method: 'carrier-pigeon' } });
+  assert.equal(bad.status, 400);
+  assert.equal((await t.mailTo('x@example.com')).length, 0);
 });

@@ -69,19 +69,31 @@ export async function handleStart(request, env, deps) {
   if (!email) return json({ error: 'bad_email', message: 'Enter a valid email address.' }, 400);
   if (!(await turnstileOk(request, env, deps, body.turnstile))) return json({ error: 'turnstile_failed' }, 403);
 
+  // method: "link" or "code" (what the sign-in page sends). Left out, both are emailed, for older callers.
+  const method = body.method === undefined ? 'both' : body.method;
+  if (!['link', 'code', 'both'].includes(method)) return json({ error: 'bad_method', message: 'Choose a link or a code.' }, 400);
+  const wantsLink = method !== 'code', wantsCode = method !== 'link';
   const now = deps.now();
   await store.purgeExpired(env.DB, now);
   const challenge = newToken();
   // Over the limit we answer exactly the same way but send nothing, so the limit itself leaks nothing either.
   if ((await store.countLoginChallengesSince(env.DB, email, now - 3_600_000)) < RULES.loginsPerEmailPerHour) {
+    // The person picks one way in. The way not picked gets a random value nobody was ever told, so it cannot be used.
     const linkToken = newToken();
     const code = newCode();
     await store.addLoginChallenge(env.DB, {
-      challenge, linkHash: await sha256Hex(linkToken), codeHash: await sha256Hex(`${challenge}:${code}`), email, now, ttl: RULES.loginTtl,
+      challenge,
+      linkHash: await sha256Hex(wantsCode && !wantsLink ? newToken() : linkToken),
+      codeHash: await sha256Hex(wantsLink && !wantsCode ? `${challenge}:${newCode()}:${newToken()}` : `${challenge}:${code}`),
+      email, now, ttl: RULES.loginTtl,
     });
-    queueMail(deps, () => deps.mailer.send(signInMessage({ to: email, link: `${env.APP_URL}/signin#t=${linkToken}`, code })));
+    queueMail(deps, () => deps.mailer.send(signInMessage({
+      to: email,
+      ...(wantsLink ? { link: `${env.APP_URL}/signin#t=${linkToken}` } : {}),
+      ...(wantsCode ? { code } : {}),
+    })));
   }
-  return json({ challenge });
+  return json({ challenge, method });
 }
 
 // A brand-new account starts with one basic ofrenda and a welcome email. Neither may ever block signing in.
