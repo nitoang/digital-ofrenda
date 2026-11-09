@@ -43,7 +43,7 @@ async function setup({ env: envOver = {}, deps: depsOver = {} } = {}) {
     },
     async signIn(email) {
       const before = (await t.mailTo(email)).length;
-      const start = await t.call('POST', '/auth/start', { body: { email } });
+      const start = await t.call('POST', '/auth/start', { body: { method: 'code', email } });
       assert.equal(start.status, 200);
       const { challenge } = await start.json();
       const mail = (await t.mailTo(email))[before];
@@ -94,30 +94,31 @@ async function setup({ env: envOver = {}, deps: depsOver = {} } = {}) {
 
 // ---------- sign-in ----------
 
-test('sign-in: start emails a link and a code, stores only hashes, and answers the same for anyone', async () => {
+test('sign-in: start emails the one thing chosen, stores only hashes, and answers the same for anyone', async () => {
   const t = await setup();
-  const res = await t.call('POST', '/auth/start', { body: { email: '  Maria@Example.COM ' } });
+  const res = await t.call('POST', '/auth/start', { body: { method: 'code', email: '  Maria@Example.COM ' } });
   assert.equal(res.status, 200);
   const { challenge } = await res.json();
   const [mail] = await t.mailTo('maria@example.com');
   const code = /(\d{6})/.exec(mail.subject)[1];
-  const token = /https:\/\/ofrenda\.test\/signin#t=([\w-]{43})/.exec(mail.text)[1];
   assert.ok(mail.text.includes(code));
+  assert.doesNotMatch(mail.text, /signin#t=/);
   const row = t.db.prepare('SELECT * FROM login_challenges').get();
-  assert.equal(row.link_hash, sha(token));
   assert.equal(row.code_hash, sha(`${challenge}:${code}`));
+  const link = await t.call('POST', '/auth/start', { body: { method: 'link', email: 'maria@example.com' } });
+  const token = /https:\/\/ofrenda\.test\/signin#t=([\w-]{43})/.exec((await t.mailTo('maria@example.com'))[1].text)[1];
+  assert.equal(t.db.prepare('SELECT link_hash FROM login_challenges WHERE challenge_id = ?').get((await link.json()).challenge).link_hash, sha(token));
   const stored = t.db.prepare('SELECT * FROM login_challenges').all().flatMap(r => Object.values(r));
   assert.ok(!stored.includes(token) && !stored.includes(code), 'neither the link token nor the code is stored');
   assert.equal(t.db.prepare('SELECT COUNT(*) n FROM users').get().n, 0, 'no account exists until the address is proven');
   // Known and unknown addresses get the same kind of answer.
-  await t.signIn('maria@example.com');
-  const again = await t.call('POST', '/auth/start', { body: { email: 'maria@example.com' } });
+  const again = await t.call('POST', '/auth/start', { body: { method: 'code', email: 'someone-new@example.com' } });
   assert.deepEqual(Object.keys(await again.json()), ['challenge', 'method']);
 });
 
 test('sign-in: the code signs you in once, with a hardened cookie that is stored hashed', async () => {
   const t = await setup();
-  const start = await (await t.call('POST', '/auth/start', { body: { email: 'maria@example.com' } })).json();
+  const start = await (await t.call('POST', '/auth/start', { body: { method: 'code', email: 'maria@example.com' } })).json();
   const code = /(\d{6})/.exec((await t.mailTo('maria@example.com'))[0].subject)[1];
   const res = await t.call('POST', '/auth/code', { body: { challenge: start.challenge, code } });
   assert.equal(res.status, 200);
@@ -131,22 +132,20 @@ test('sign-in: the code signs you in once, with a hardened cookie that is stored
   assert.equal((await t.call('GET', '/me', { cookie: `__Host-session=${value}` })).status, 200);
 });
 
-test('sign-in: the emailed link is a second door into the same one-time challenge', async () => {
+test('sign-in: the emailed link works once', async () => {
   const t = await setup();
-  const { challenge } = await (await t.call('POST', '/auth/start', { body: { email: 'maria@example.com' } })).json();
+  await t.call('POST', '/auth/start', { body: { method: 'link', email: 'maria@example.com' } });
   const [mail] = await t.mailTo('maria@example.com');
   const token = /#t=([\w-]{43})/.exec(mail.text)[1];
-  const code = /(\d{6})/.exec(mail.subject)[1];
   assert.equal((await t.call('POST', '/auth/redeem', { body: { token: 'garbage' } })).status, 400);
   assert.equal((await t.call('POST', '/auth/redeem', { body: { token: 5 } })).status, 400);
   assert.equal((await t.call('POST', '/auth/redeem', { body: { token } })).status, 200);
   assert.equal((await t.call('POST', '/auth/redeem', { body: { token } })).status, 400, 'link replay');
-  assert.equal((await t.call('POST', '/auth/code', { body: { challenge, code } })).status, 400, 'the code died with the link');
 });
 
 test('sign-in: only five guesses per code, and the right code afterwards is refused', async () => {
   const t = await setup();
-  const { challenge } = await (await t.call('POST', '/auth/start', { body: { email: 'maria@example.com' } })).json();
+  const { challenge } = await (await t.call('POST', '/auth/start', { body: { method: 'code', email: 'maria@example.com' } })).json();
   const code = /(\d{6})/.exec((await t.mailTo('maria@example.com'))[0].subject)[1];
   const wrong = code === '000000' ? '111111' : '000000';
   for (const bad of ['12345', 'abcdef', null, 123456789]) {
@@ -159,8 +158,8 @@ test('sign-in: only five guesses per code, and the right code afterwards is refu
 
 test('sign-in: the link and code expire after 15 minutes', async () => {
   const t = await setup();
-  const a = await (await t.call('POST', '/auth/start', { body: { email: 'a@example.com' } })).json();
-  await t.call('POST', '/auth/start', { body: { email: 'b@example.com' } });
+  const a = await (await t.call('POST', '/auth/start', { body: { method: 'code', email: 'a@example.com' } })).json();
+  await t.call('POST', '/auth/start', { body: { method: 'link', email: 'b@example.com' } });
   const code = /(\d{6})/.exec((await t.mailTo('a@example.com'))[0].subject)[1];
   const token = /#t=([\w-]{43})/.exec((await t.mailTo('b@example.com'))[0].text)[1];
   t.tick(15 * MIN + 1);
@@ -172,39 +171,39 @@ test('sign-in: five emails per address per hour, and the limit looks the same fr
   const t = await setup();
   const bodies = [];
   for (let i = 0; i < 7; i++) {
-    const r = await t.call('POST', '/auth/start', { body: { email: 'maria@example.com' } });
+    const r = await t.call('POST', '/auth/start', { body: { method: 'code', email: 'maria@example.com' } });
     assert.equal(r.status, 200);
     bodies.push(Object.keys(await r.json()).join());
   }
   assert.equal((await t.mailTo('maria@example.com')).length, 5);
   assert.equal(new Set(bodies).size, 1);
   t.tick(HOUR + 1);
-  await t.call('POST', '/auth/start', { body: { email: 'maria@example.com' } });
+  await t.call('POST', '/auth/start', { body: { method: 'code', email: 'maria@example.com' } });
   assert.equal((await t.mailTo('maria@example.com')).length, 6);
 });
 
 test('sign-in: bad emails and bodies are refused; Turnstile fails closed; misconfiguration refuses to run', async () => {
   const t = await setup();
   for (const email of ['nope', 'a@b', 'a b@c.com', '', 5, null, 'a@b.c', 'x'.repeat(300) + '@a.com', 'a@b.com\nbcc:x@y.com', '<a@b.com>']) {
-    const res = await t.call('POST', '/auth/start', { body: { email } });
+    const res = await t.call('POST', '/auth/start', { body: { method: 'code', email } });
     assert.equal(res.status, 400, String(email).slice(0, 30));
   }
   assert.equal((await t.call('POST', '/auth/start', { body: '{nope' })).status, 400);
   assert.equal((await t.call('POST', '/auth/start', { body: '[]' })).status, 400);
-  assert.equal((await t.call('POST', '/auth/start', { body: JSON.stringify({ email: 'a@b.com', pad: 'x'.repeat(20_000) }) })).status, 413);
+  assert.equal((await t.call('POST', '/auth/start', { body: JSON.stringify({ method: 'code', email: 'a@b.com', pad: 'x'.repeat(20_000) }) })).status, 413);
   assert.equal(t.sent.length, 0);
 
   const calls = [];
   const fetch = async (url, init) => { calls.push({ url, form: Object.fromEntries(init.body) }); return new Response(JSON.stringify({ success: calls.length !== 1 })); };
   const ts = await setup({ env: { TURNSTILE_DISABLED: undefined, TURNSTILE_SECRET: 'ts-secret' }, deps: { fetch } });
-  const go = turnstile => ts.call('POST', '/auth/start', { body: { email: 'a@b.com', turnstile }, headers: { 'cf-connecting-ip': '203.0.113.9' } });
+  const go = turnstile => ts.call('POST', '/auth/start', { body: { method: 'code', email: 'a@b.com', turnstile }, headers: { 'cf-connecting-ip': '203.0.113.9' } });
   assert.equal((await go(undefined)).status, 403);
   assert.equal(calls.length, 0, 'no token means no lookup');
   assert.equal((await go('bad-token')).status, 403);
   assert.deepEqual(calls[0].form, { secret: 'ts-secret', response: 'bad-token', remoteip: '203.0.113.9' });
   assert.equal((await go('good-token')).status, 200);
   const down = await setup({ env: { TURNSTILE_DISABLED: undefined, TURNSTILE_SECRET: 's' }, deps: { fetch: async () => { throw new Error('offline'); } } });
-  assert.equal((await down.call('POST', '/auth/start', { body: { email: 'a@b.com', turnstile: 'x' } })).status, 403);
+  assert.equal((await down.call('POST', '/auth/start', { body: { method: 'code', email: 'a@b.com', turnstile: 'x' } })).status, 403);
 
   for (const [what, opts] of [
     ['no Turnstile secret and not dev mode', { env: { TURNSTILE_DISABLED: undefined } }],
@@ -215,7 +214,7 @@ test('sign-in: bad emails and bodies are refused; Turnstile fails closed; miscon
     ['no database', { env: { DB: undefined } }],
   ]) {
     const bad = await setup(opts);
-    const res = await bad.call('POST', '/auth/start', { body: { email: 'a@b.com' } });
+    const res = await bad.call('POST', '/auth/start', { body: { method: 'code', email: 'a@b.com' } });
     assert.equal(res.status, 500, what);
     assert.equal((await res.json()).error, 'misconfigured');
   }
@@ -229,7 +228,7 @@ test('CSRF: anything that changes data must come from our own origin', async () 
     assert.equal(r.status, 403, String(origin));
     assert.equal((await r.json()).error, 'bad_origin');
   }
-  assert.equal((await t.call('POST', '/auth/start', { body: { email: 'x@y.com' }, origin: 'https://evil.test' })).status, 403, 'sign-in too');
+  assert.equal((await t.call('POST', '/auth/start', { body: { method: 'code', email: 'x@y.com' }, origin: 'https://evil.test' })).status, 403, 'sign-in too');
   assert.equal(t.db.prepare('SELECT COUNT(*) n FROM altars').get().n, 0);
   assert.equal((await t.call('GET', '/me', { cookie: maria.cookie, origin: null })).status, 200, 'reading is fine');
   assert.equal((await t.call('OPTIONS', '/ofrendas', { origin: 'https://evil.test' })).headers.get('access-control-allow-origin'), null, 'there is no CORS');
@@ -1223,11 +1222,11 @@ test('housekeeping: expired sign-in records, sessions and email-change codes are
   const n = table => t.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n;
   assert.deepEqual([n('login_challenges'), n('email_changes')], [1, 1]);
   await t.advance(2 * DAY);
-  await t.call('POST', '/auth/start', { body: { email: 'other@example.com' } });
+  await t.call('POST', '/auth/start', { body: { method: 'code', email: 'other@example.com' } });
   assert.equal(n('login_challenges'), 1, 'only the new one is left');
   assert.equal(n('email_changes'), 0);
   await t.advance(t.RULES.sessionTtl + DAY);
-  await t.call('POST', '/auth/start', { body: { email: 'other@example.com' } });
+  await t.call('POST', '/auth/start', { body: { method: 'code', email: 'other@example.com' } });
   assert.equal(n('sessions'), 0);
 });
 
@@ -1366,7 +1365,7 @@ test('a share email never calls the loved one "My Ofrenda"', async () => {
 test('sign-in: the person chooses a link or a code, and only that one is emailed and usable', async () => {
   const t = await setup();
   // Link only: no code in the email or subject, and no code can be guessed for it.
-  const l = await (await t.call('POST', '/auth/start', { body: { email: 'link@example.com', method: 'link' } })).json();
+  const l = await (await t.call('POST', '/auth/start', { body: { method: 'code', email: 'link@example.com', method: 'link' } })).json();
   assert.equal(l.method, 'link');
   const [lm] = await t.mailTo('link@example.com');
   assert.equal(lm.subject, 'Your Digifrenda sign-in link');
@@ -1376,7 +1375,7 @@ test('sign-in: the person chooses a link or a code, and only that one is emailed
   assert.equal((await t.call('POST', '/auth/redeem', { body: { token } })).status, 200);
 
   // Code only: no link in the email, and no link token exists for it.
-  const c = await (await t.call('POST', '/auth/start', { body: { email: 'code@example.com', method: 'code' } })).json();
+  const c = await (await t.call('POST', '/auth/start', { body: { method: 'code', email: 'code@example.com', method: 'code' } })).json();
   const [cm] = await t.mailTo('code@example.com');
   assert.match(cm.subject, /^Your Digifrenda sign-in code is \d{6}$/);
   assert.doesNotMatch(cm.text, /signin#t=|https?:\/\//);
@@ -1385,7 +1384,7 @@ test('sign-in: the person chooses a link or a code, and only that one is emailed
   assert.equal((await t.call('POST', '/auth/code', { body: { challenge: c.challenge, code } })).status, 400, 'code replay');
 
   // Anything else is refused and sends nothing.
-  const bad = await t.call('POST', '/auth/start', { body: { email: 'x@example.com', method: 'carrier-pigeon' } });
+  const bad = await t.call('POST', '/auth/start', { body: { method: 'code', email: 'x@example.com', method: 'carrier-pigeon' } });
   assert.equal(bad.status, 400);
   assert.equal((await t.mailTo('x@example.com')).length, 0);
 });

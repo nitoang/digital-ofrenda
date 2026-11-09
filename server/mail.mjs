@@ -26,17 +26,20 @@ export const queueMail = (deps, work) => deps.defer(Promise.resolve().then(work)
 
 const sign = '\n\n— digital-ofrenda\nIf you did not expect this email, you can ignore it.';
 
-// The person chose how to sign in, so the email carries only that: a link (button on the page) or a 6-digit code.
-// Passing both is kept for older callers. The code goes in the subject so it shows up in a notification.
-export const signInMessage = ({ to, link, code }) => {
-  const parts = [];
-  if (link) parts.push(`Here's your sign-in link. Click on the link below to start building.\n\nSign in to Digifrenda:\n${link}`);
-  if (code) parts.push(`${link ? 'Prefer a code? Enter this' : "Here's your sign-in code. Enter it"} on the sign-in page: ${code}`);
-  parts.push(`Bonus: no password required, as I recognize you've probably got a lot on your plate.`);
-  parts.push(`${link && code ? 'The link and the code expire' : link ? 'The link works once and expires' : 'The code works once and expires'} in 15 minutes.${link && code ? ' Use either one; once you use one, the other stops working.' : ''}`);
-  parts.push(`Didn't ask for this? Ignore it.\n\nDigifrenda 🧡`);
-  return { to, subject: code ? `Your Digifrenda sign-in code is ${code}` : 'Your Digifrenda sign-in link', text: parts.join('\n\n') };
-};
+// The person chose how to sign in, so each email carries one thing: a link (a button on the page) or a 6-digit code.
+// The code goes in the subject so it shows up in a notification.
+export const signInMessage = ({ to, link, code }) => ({
+  to,
+  subject: link ? 'Your Digifrenda sign-in link' : `Your Digifrenda sign-in code is ${code}`,
+  text: [
+    link
+      ? `Here's your sign-in link. Click on the link below to start building.\n\nSign in to Digifrenda:\n${link}`
+      : `Here's your sign-in code. Enter it on the sign-in page: ${code}`,
+    `Bonus: no password required, as I recognize you've probably got a lot on your plate.`,
+    `The ${link ? 'link' : 'code'} works once and expires in 15 minutes.`,
+    `Didn't ask for this? Ignore it.\n\nDigifrenda 🧡`,
+  ].join('\n\n'),
+});
 
 // Sent once, the first time an address signs in.
 export const welcomeMessage = ({ to, link }) => ({
