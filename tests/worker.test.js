@@ -112,7 +112,7 @@ test('sign-in: start emails a link and a code, stores only hashes, and answers t
   // Known and unknown addresses get the same kind of answer.
   await t.signIn('maria@example.com');
   const again = await t.call('POST', '/auth/start', { body: { email: 'maria@example.com' } });
-  assert.deepEqual(Object.keys(await again.json()), ['challenge']);
+  assert.deepEqual(Object.keys(await again.json()), ['challenge', 'method']);
 });
 
 test('sign-in: the code signs you in once, with a hardened cookie that is stored hashed', async () => {
@@ -1318,4 +1318,74 @@ test('names: a handover keeps the name, and a name never shadows a real id', asy
   assert.equal((await formerOwner.call('PUT', `/ofrendas/${id}/slug`, { slug: 'old-owner-name' })).status, 403, 'the old owner is now a co-keeper');
   // An id-shaped string is refused as a name, so /a/<id> always means that id.
   assert.equal((await heir.json('PUT', `/ofrendas/${id}/slug`, { slug: id })).body.error, 'bad_name');
+});
+
+test('first sign-in: one welcome email, and (when enabled) a starter ofrenda called My Ofrenda', async () => {
+  const t = await setup({ env: { STARTER_OFRENDA: '1' } });
+  const { cookie } = await t.signIn('new@example.com');
+  const welcome = (await t.mailTo('new@example.com')).filter(m => m.subject === 'Welcome to Digifrenda');
+  assert.equal(welcome.length, 1);
+  assert.match(welcome[0].text, /My Ofrenda/);
+  const me = await (await t.call('GET', '/me', { cookie })).json();
+  assert.equal(me.altars.length, 1);
+  const state = await (await t.call('GET', `/ofrendas/${me.altars[0].id}`)).json();
+  assert.equal(state.name, 'My Ofrenda');
+  assert.ok(state.items.length > 0);
+  const { validateOfrenda } = await import('../server/validate.mjs');
+  assert.equal(validateOfrenda(state, { entitlements: {} }).ok, true);
+  assert.ok(welcome[0].text.includes(`${ORIGIN}/a/${me.altars[0].id}`));
+
+  // Signing in again sends no second welcome and makes no second ofrenda.
+  await t.signIn('new@example.com');
+  assert.equal((await t.mailTo('new@example.com')).filter(m => m.subject === 'Welcome to Digifrenda').length, 1);
+  assert.equal((await (await t.call('GET', '/me', { cookie })).json()).altars.length, 1);
+
+  // They can still add more, up to the free limit (the starter counts).
+  assert.equal((await t.call('POST', '/ofrendas', { cookie })).status, 201);
+  assert.equal((await t.call('POST', '/ofrendas', { cookie })).status, 201);
+  assert.equal((await t.call('POST', '/ofrendas', { cookie })).status, 402);
+});
+
+test('first sign-in without STARTER_OFRENDA: welcome email only, no ofrenda', async () => {
+  const t = await setup();
+  const { cookie } = await t.signIn('plain@example.com');
+  assert.equal((await t.mailTo('plain@example.com')).filter(m => m.subject === 'Welcome to Digifrenda').length, 1);
+  assert.equal((await (await t.call('GET', '/me', { cookie })).json()).altars.length, 0);
+});
+
+test('a share email never calls the loved one "My Ofrenda"', async () => {
+  const t = await setup({ env: { STARTER_OFRENDA: '1' } });
+  const { cookie } = await t.signIn('own@example.com');
+  const id = (await (await t.call('GET', '/me', { cookie })).json()).altars[0].id;
+  const res = await t.call('POST', `/ofrendas/${id}/share`, { cookie, body: { email: 'friend@example.com', access: 'view' } });
+  assert.equal(res.status, 201);
+  const mail = (await t.mailTo('friend@example.com'))[0];
+  assert.doesNotMatch(mail.subject + mail.text, /My Ofrenda/);
+});
+
+test('sign-in: the person chooses a link or a code, and only that one is emailed and usable', async () => {
+  const t = await setup();
+  // Link only: no code in the email or subject, and no code can be guessed for it.
+  const l = await (await t.call('POST', '/auth/start', { body: { email: 'link@example.com', method: 'link' } })).json();
+  assert.equal(l.method, 'link');
+  const [lm] = await t.mailTo('link@example.com');
+  assert.equal(lm.subject, 'Your Digifrenda sign-in link');
+  assert.doesNotMatch(lm.subject + lm.text, /\b\d{6}\b/);
+  for (let c = 0; c < 5; c++) assert.equal((await t.call('POST', '/auth/code', { body: { challenge: l.challenge, code: String(100000 + c) } })).status, 400);
+  const token = /#t=([\w-]{43})/.exec(lm.text)[1];
+  assert.equal((await t.call('POST', '/auth/redeem', { body: { token } })).status, 200);
+
+  // Code only: no link in the email, and no link token exists for it.
+  const c = await (await t.call('POST', '/auth/start', { body: { email: 'code@example.com', method: 'code' } })).json();
+  const [cm] = await t.mailTo('code@example.com');
+  assert.match(cm.subject, /^Your Digifrenda sign-in code is \d{6}$/);
+  assert.doesNotMatch(cm.text, /signin#t=|https?:\/\//);
+  const code = /(\d{6})/.exec(cm.subject)[1];
+  assert.equal((await t.call('POST', '/auth/code', { body: { challenge: c.challenge, code } })).status, 200);
+  assert.equal((await t.call('POST', '/auth/code', { body: { challenge: c.challenge, code } })).status, 400, 'code replay');
+
+  // Anything else is refused and sends nothing.
+  const bad = await t.call('POST', '/auth/start', { body: { email: 'x@example.com', method: 'carrier-pigeon' } });
+  assert.equal(bad.status, 400);
+  assert.equal((await t.mailTo('x@example.com')).length, 0);
 });

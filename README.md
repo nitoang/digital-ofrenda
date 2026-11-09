@@ -77,7 +77,7 @@ await save(r.state);                                      // store the cleaned s
 
 `server/worker.mjs` is a complete example for Cloudflare Workers + D1 (config in `server/wrangler.example.toml`, schema in `server/migrations/`). Altars are meant to last years and be shared by families, so people sign in by email: **no passwords**.
 
-**Signing in.** Enter an email and get a link and a 6-digit code (two ways to use one single-use challenge, valid 15 minutes). There is no separate sign-up: an account is created only when the address is proven. The reply never says whether an address is known. A session is a random value in a `__Host-` cookie (Secure, HttpOnly, SameSite=Lax), stored hashed, and lasts 90 days from last use because people come back after months. Wrong codes are limited to 5 per challenge, and emails to 5 per address per hour. Because it uses a cookie, every request that changes data must come from your own origin (checked against `APP_URL`); there is deliberately no CORS, so serve the page and the Worker from one origin.
+**Signing in.** Enter an email and choose how to sign in: a link or a 6-digit code. Only the one you choose is emailed, it works once, and it is valid 15 minutes (`POST /auth/start` takes `method: "link" | "code"`; left out, both are sent, for older callers). There is no separate sign-up: an account is created only when the address is proven. The reply never says whether an address is known. A session is a random value in a `__Host-` cookie (Secure, HttpOnly, SameSite=Lax), stored hashed, and lasts 90 days from last use because people come back after months. Wrong codes are limited to 5 per challenge, and emails to 5 per address per hour. Because it uses a cookie, every request that changes data must come from your own origin (checked against `APP_URL`); there is deliberately no CORS, so serve the page and the Worker from one origin.
 
 **Altars and people.** An account owns up to 3 altars for free (`RULES.freeAltars`); the **platinum** plan lifts that and unlocks unlimited photos and the seven-tier option on all of the owner's altars. Other upgrades are bought per altar. Anyone with the link can view an altar. Editing needs an account on it:
 - **Owner:** one per altar. Saves, deletes, invites co-keepers, names a successor.
@@ -111,7 +111,7 @@ Set up Stripe once (use test mode first):
 
 Setup you do once:
 - `npx wrangler d1 create digital-ofrenda`, put the ID in the config, then `npx wrangler d1 migrations apply digital-ofrenda`.
-- **Email:** `mailer/` is the `MAILER` Worker, and the only code that knows the provider (Resend). Steps: add and verify your sending domain in Resend (SPF and DKIM records), then `cd mailer`, copy `wrangler.example.toml` to `wrangler.toml`, set `MAIL_FROM` to an address on that domain, `npx wrangler secret put RESEND_API_KEY`, and `npx wrangler deploy`. Deploy it before the API Worker, whose `MAILER` binding points at it. It has no public address. To use another provider, change only `mailer/worker.mjs`. Templates are in `server/mail.mjs`. Links use `APP_URL`, never the Host header.
+- **Email:** `mailer/` is the `MAILER` Worker, and the only code that knows the provider (Resend). Steps: add and verify your sending domain in Resend (SPF and DKIM records), then `cd mailer`, copy `wrangler.example.toml` to `wrangler.toml`, set `MAIL_FROM` to an address on that domain, `npx wrangler secret put RESEND_API_KEY`, and `npx wrangler deploy`. Deploy it before the API Worker, whose `MAILER` binding points at it. It has no public address. To use another provider, change only `mailer/worker.mjs`. Templates are in `server/mail.mjs`. A new account gets a welcome email the first time it signs in, and (with `STARTER_OFRENDA = "1"`, on in the example config) one basic ofrenda called "My Ofrenda" that counts toward the free limit. Links use `APP_URL`, never the Host header.
 - **Turnstile:** create a widget and `wrangler secret put TURNSTILE_SECRET`. Sign-in refuses requests without a valid token. `TURNSTILE_DISABLED=1` is for local development only, and the Worker returns 500 if neither is set.
 - **Rate limits:** add Cloudflare rate-limiting rules on `POST /auth/start`, `/auth/code` and `/auth/redeem`.
 - Tune the numbers in `server/rules.mjs`.
@@ -138,7 +138,7 @@ Not built: Stripe automatic tax (a decision, not code). Email addresses are stor
 | Page | What it does |
 |---|---|
 | `/` | Short welcome with a link to sign in. |
-| `/signin` | Email, then the 6-digit code. Also handles the emailed link (a button press, so mail scanners can't use it up). |
+| `/signin` | Email and a choice of link or 6-digit code. Handles the emailed link (a button press, so mail scanners can't use it up). |
 | `/my` | Your ofrendas, starting a new one, the ofrendas you agreed to look after (ask to take over, complete the handover), sign out. |
 | `/a/<id>` | The altar. Keepers get the editor, everyone else a read-only view that refreshes every 15 seconds. Has a copy-link box. |
 | `/a/<id>/keepers` | Owner: invite co-keepers, name or remove a successor, stop a takeover request, delete. Co-keepers: leave. |

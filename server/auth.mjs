@@ -13,7 +13,8 @@
 
 import { json, readJson, isResponse, normalizeEmail, sha256Hex, newToken, newId, newCode, timingSafeEqual } from './util.mjs';
 import * as store from './store.mjs';
-import { queueMail, signInMessage, claimCancelledMessage } from './mail.mjs';
+import { queueMail, signInMessage, welcomeMessage, claimCancelledMessage } from './mail.mjs';
+import { starterState } from './starter.mjs';
 import { RULES } from './rules.mjs';
 
 const COOKIE = '__Host-session';
@@ -68,25 +69,52 @@ export async function handleStart(request, env, deps) {
   if (!email) return json({ error: 'bad_email', message: 'Enter a valid email address.' }, 400);
   if (!(await turnstileOk(request, env, deps, body.turnstile))) return json({ error: 'turnstile_failed' }, 403);
 
+  // method: "link" or "code" (what the sign-in page sends). Left out, both are emailed, for older callers.
+  const method = body.method === undefined ? 'both' : body.method;
+  if (!['link', 'code', 'both'].includes(method)) return json({ error: 'bad_method', message: 'Choose a link or a code.' }, 400);
+  const wantsLink = method !== 'code', wantsCode = method !== 'link';
   const now = deps.now();
   await store.purgeExpired(env.DB, now);
   const challenge = newToken();
   // Over the limit we answer exactly the same way but send nothing, so the limit itself leaks nothing either.
   if ((await store.countLoginChallengesSince(env.DB, email, now - 3_600_000)) < RULES.loginsPerEmailPerHour) {
+    // The person picks one way in. The way not picked gets a random value nobody was ever told, so it cannot be used.
     const linkToken = newToken();
     const code = newCode();
     await store.addLoginChallenge(env.DB, {
-      challenge, linkHash: await sha256Hex(linkToken), codeHash: await sha256Hex(`${challenge}:${code}`), email, now, ttl: RULES.loginTtl,
+      challenge,
+      linkHash: await sha256Hex(wantsCode && !wantsLink ? newToken() : linkToken),
+      codeHash: await sha256Hex(wantsLink && !wantsCode ? `${challenge}:${newCode()}:${newToken()}` : `${challenge}:${code}`),
+      email, now, ttl: RULES.loginTtl,
     });
-    queueMail(deps, () => deps.mailer.send(signInMessage({ to: email, link: `${env.APP_URL}/signin#t=${linkToken}`, code })));
+    queueMail(deps, () => deps.mailer.send(signInMessage({
+      to: email,
+      ...(wantsLink ? { link: `${env.APP_URL}/signin#t=${linkToken}` } : {}),
+      ...(wantsCode ? { code } : {}),
+    })));
   }
-  return json({ challenge });
+  return json({ challenge, method });
+}
+
+// A brand-new account starts with one basic ofrenda and a welcome email. Neither may ever block signing in.
+async function welcomeNewUser(env, deps, user, now) {
+  let link = `${env.APP_URL}/my`;
+  if (env.STARTER_OFRENDA === '1') {
+    try {
+      const id = newId();
+      await store.createAltar(env.DB, { id, userId: user.id, now });
+      await store.saveState(env.DB, id, JSON.stringify(starterState()), now);
+      link = `${env.APP_URL}/a/${id}`;
+    } catch (e) { console.error('starter ofrenda not created:', e?.message); }
+  }
+  queueMail(deps, () => deps.mailer.send(welcomeMessage({ to: user.email, link })));
 }
 
 async function startSession(env, deps, email) {
   const now = deps.now();
   const user = await store.findOrCreateUser(env.DB, { id: newId(), email, now });
   await noteActivity(env, deps, user.id);
+  if (user.created) await welcomeNewUser(env, deps, user, now);
   const token = newToken();
   await store.createSession(env.DB, { idHash: await sha256Hex(token), userId: user.id, now, ttl: RULES.sessionTtl });
   return json({ email: user.email, plan: user.plan ?? null }, 200, { 'set-cookie': cookie(token, Math.floor(RULES.sessionTtl / 1000)) });
