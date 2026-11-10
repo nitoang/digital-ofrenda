@@ -32,7 +32,8 @@
 //   POST /ofrendas/:id/invites {email} | DELETE /ofrendas/:id/invites/:inviteId   co-keeper invitations
 //   POST /invites/accept {token}
 //   DELETE /ofrendas/:id/members/:userId                   owner removes a co-keeper, or a co-keeper leaves
-//   PUT /ofrendas/:id/successor {email} | DELETE /ofrendas/:id/successor
+//   PUT /ofrendas/:id/successor {email, waitMonths?: 6|12, auto?: bool} | DELETE /ofrendas/:id/successor
+//   PUT /ofrendas/:id/successor/settings {waitMonths, auto}   change those without asking the successor again
 //   POST /successor/accept {token}
 //   POST /ofrendas/:id/handover {email, confirm: "handover"} | DELETE /ofrendas/:id/handover   hand to someone (see handover.mjs); owner only
 //   POST /ofrendas/:id/claim | DELETE /ofrendas/:id/claim | POST /ofrendas/:id/claim/complete
@@ -48,6 +49,7 @@ import * as auth from './auth.mjs';
 import * as altars from './altars.mjs';
 import * as team from './team.mjs';
 import * as handover from './handover.mjs';
+import { runScheduled } from './scheduled.mjs';
 import * as account from './account.mjs';
 import { handleStripe } from './billing.mjs';
 import { handleCheckout } from './checkout.mjs';
@@ -81,6 +83,7 @@ const ROUTES = [
   ['DELETE', new RegExp(`^/ofrendas/${ID}/members/${ID}$`), team.handleRemoveMember],
   ['PUT', new RegExp(`^/ofrendas/${ID}/successor$`), team.handleSetSuccessor],
   ['DELETE', new RegExp(`^/ofrendas/${ID}/successor$`), team.handleClearSuccessor],
+  ['PUT', new RegExp(`^/ofrendas/${ID}/successor/settings$`), team.handleSuccessorSettings],
   ['POST', /^\/successor\/accept$/, team.handleAcceptSuccessor],
   ['POST', new RegExp(`^/ofrendas/${ID}/handover$`), handover.handleHandover],
   ['DELETE', new RegExp(`^/ofrendas/${ID}/handover$`), handover.handleCancelHandover],
@@ -145,6 +148,9 @@ export const createHandler = (deps = {}) => async (request, env) => {
   return res;
 };
 
+export { runScheduled };
+
 export default {
+  scheduled: (event, env, ctx) => ctx.waitUntil(runScheduled(env, { now: Date.now, defer: p => ctx.waitUntil(p), mailer: mailerFromEnv(env) })),
   fetch: (request, env, ctx) => createHandler({ defer: p => ctx.waitUntil(p) })(request, env),
 };

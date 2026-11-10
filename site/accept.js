@@ -22,7 +22,7 @@ const WORDS = {
   },
   successor: {
     title: 'You have been asked to be a successor',
-    body: 'If the owner can no longer look after this ofrenda, you could take it over. When you agree, you can add to it right away as a co-keeper, but you cannot delete it. You could only ask to take it over after the owner has been away for about a year, and the owner is told first and can stop it by signing in.',
+    body: 'If the owner can no longer look after this ofrenda, you could take it over. When you agree, you can add to it right away as a co-keeper, but you cannot delete it. It would only pass to you after the owner has been away for a long time (a year, or six months if they chose that). The owner is emailed first and has 30 days to stop it by signing in.',
     button: 'Agree to be the successor',
     bad: 'This request has expired, was already answered, or was sent to a different email address.',
   },
