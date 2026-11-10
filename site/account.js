@@ -4,7 +4,7 @@ import { h, messages, busy } from './ui.js';
 
 // onChanged(text) is called after the email address changes, so the page can show the new one.
 export function accountSection(me, onChanged) {
-  return [h('h2', {}, 'Your account'), changeEmail(me, onChanged), deleteAccount(me)];
+  return [h('h2', {}, 'Your account'), changeEmail(me, onChanged), downloadData(), deleteAccount(me)];
 }
 
 function changeEmail(me, onChanged) {
@@ -56,6 +56,14 @@ function changeEmail(me, onChanged) {
 
   askAddress();
   return box;
+}
+
+// A plain link: the browser saves the file (the Worker sends it as an attachment) and the session cookie rides along.
+function downloadData() {
+  return h('div', { class: 'card' },
+    h('h3', {}, 'Download everything'),
+    h('p', { class: 'muted' }, 'One file with your account and every ofrenda you own or keep, including its photos and the people who keep it. Keep it somewhere safe: it holds email addresses and your photos.'),
+    h('p', {}, h('a', { class: 'button', id: 'download-everything', href: '/me/export', download: '' }, 'Download my data')));
 }
 
 function deleteAccount(me) {

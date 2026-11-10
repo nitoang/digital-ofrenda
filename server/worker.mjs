@@ -19,6 +19,7 @@
 //   POST /auth/code {challenge, code}                      the code; sets the session cookie
 //   POST /auth/logout, POST /auth/logout-all
 //   GET  /me                                               who I am, my altars, takeovers I could start
+//   GET  /me/export                                        download everything I have, as one JSON file (see export.mjs)
 //   DELETE /me {email, deleteOfrendas?}                    delete my account (see account.mjs)
 //   POST /me/email {email} | POST /me/email/confirm {code} change my email, proved with a code sent to the new one
 //   POST /ofrendas                                         create one (free accounts: RULES.freeAltars)
@@ -51,6 +52,7 @@ import * as team from './team.mjs';
 import * as handover from './handover.mjs';
 import { runScheduled } from './scheduled.mjs';
 import * as account from './account.mjs';
+import { handleExport } from './export.mjs';
 import { handleStripe } from './billing.mjs';
 import { handleCheckout } from './checkout.mjs';
 
@@ -66,6 +68,7 @@ const ROUTES = [
   ['POST', /^\/auth\/logout$/, auth.handleLogout],
   ['POST', /^\/auth\/logout-all$/, auth.handleLogoutEverywhere],
   ['GET', /^\/me$/, altars.handleMe],
+  ['GET', /^\/me\/export$/, handleExport],
   ['DELETE', /^\/me$/, account.handleDeleteAccount],
   ['POST', /^\/me\/email$/, account.handleStartEmailChange],
   ['POST', /^\/me\/email\/confirm$/, account.handleConfirmEmailChange],

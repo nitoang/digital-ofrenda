@@ -376,3 +376,15 @@ export const takeExpiredHandover = (db, { altarId, now }) =>
   one(db, 'DELETE FROM handovers WHERE altar_id = ? AND expires_at <= ? RETURNING altar_id, to_email, from_user_id', altarId, now);
 export const listKeepers = (db, altarId) =>
   all(db, "SELECT u.id AS user_id, u.email FROM altar_members m JOIN users u ON u.id = m.user_id WHERE m.altar_id = ? AND m.role = 'keeper' ORDER BY m.added_at, u.email", altarId);
+
+// ---------- export ("download everything") ----------
+// Everything one person has in each ofrenda they belong to. Only their own rows: other people appear only by the
+// email address the team page already shows every member.
+export const exportAltars = (db, userId) =>
+  all(db, `SELECT a.id, m.role, m.added_at, a.state, a.created_at, a.updated_at,
+      (SELECT slug FROM altar_slugs s WHERE s.altar_id = a.id ORDER BY s.created_at DESC, s.rowid DESC LIMIT 1) AS slug
+    FROM altar_members m JOIN altars a ON a.id = m.altar_id WHERE m.user_id = ? ORDER BY m.added_at, a.id`, userId);
+export const listFeatures = (db, altarId) => all(db, 'SELECT name, granted_at FROM features WHERE altar_id = ? ORDER BY name', altarId);
+export const visitDays = async (db, altarId, userId) =>
+  (await one(db, 'SELECT days FROM altar_visits WHERE altar_id = ? AND user_id = ?', altarId, userId))?.days ?? 0;
+export const getUserCreated = async (db, userId) => (await one(db, 'SELECT created_at FROM users WHERE id = ?', userId))?.created_at ?? null;
