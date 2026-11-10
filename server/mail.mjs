@@ -83,7 +83,7 @@ export const claimNoticeMessage = ({ to, from, executesAt }) => ({
 export const claimCancelledMessage = ({ to }) => ({
   to,
   subject: 'The owner is back: your request was cancelled',
-  text: `The owner of the ofrenda you asked to take over signed in again, so your request was cancelled. That's good news.\n\nYou're still their successor. If they go quiet again, it can start again.${signoff}`,
+  text: `The owner of the ofrenda you asked to take over signed in again, so your request was cancelled. That's good news.\n\nYou're still their successor. If they go quiet again, you can ask again.${signoff}`,
 });
 
 export const handoverMessage = ({ to, role }) => ({
