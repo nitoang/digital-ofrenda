@@ -14,6 +14,7 @@ import * as store from './store.mjs';
 import { RULES } from './rules.mjs';
 import { DAY } from './util.mjs';
 import { suppressing } from './mailhealth.mjs';
+import { makeAlert, heartbeat } from './alerts.mjs';
 import { finishTakeover, altarName } from './team.mjs';
 import {
   queueMail, autoClaimNoticeMessage, autoClaimSuccessorMessage, claimReminderMessage,
@@ -24,14 +25,15 @@ const send = (deps, msg) => queueMail(deps, () => deps.mailer.send(msg));
 const daysLeft = (at, now) => Math.max(1, Math.ceil((at - now) / DAY));
 
 // One bad row must never stop the others.
-async function each(rows, step) {
+// It is counted, though, so a row that fails every day is reported instead of failing quietly forever.
+async function each(deps, rows, step) {
   for (const row of rows) {
-    try { await step(row); } catch (e) { console.error('scheduled step failed:', e?.message); }
+    try { await step(row); } catch (e) { console.error('scheduled step failed:', e?.message); deps.failures?.push(String(e?.message)); }
   }
 }
 
 async function startNotices(env, deps, now) {
-  await each(await store.dueAutoTakeovers(env.DB, { now, limit: RULES.jobBatch }), async t => {
+  await each(deps, await store.dueAutoTakeovers(env.DB, { now, limit: RULES.jobBatch }), async t => {
     const heir = await store.getUser(env.DB, t.accepted_user_id);
     const owners = await store.getOwners(env.DB, t.altar_id);
     if (!heir || !owners.length) return;
@@ -43,7 +45,7 @@ async function startNotices(env, deps, now) {
 }
 
 async function remindOwners(env, deps, now, claims) {
-  await each(claims, async c => {
+  await each(deps, claims, async c => {
     const due = RULES.claimReminders[c.reminders_sent];
     if (due === undefined || now < c.requested_at + due || now >= c.executes_at) return;
     if (!(await store.bumpClaimReminder(env.DB, c.altar_id, c.reminders_sent))) return;
@@ -52,7 +54,7 @@ async function remindOwners(env, deps, now, claims) {
 }
 
 async function finishNotices(env, deps, now, claims) {
-  await each(claims.filter(c => c.auto && c.executes_at <= now), async c => {
+  await each(deps, claims.filter(c => c.auto && c.executes_at <= now), async c => {
     const heir = await store.getUser(env.DB, c.requested_by);
     const succ = await store.getSuccessor(env.DB, c.altar_id);
     if (!heir || succ?.accepted_user_id !== heir.id) { await store.cancelClaim(env.DB, c.altar_id, now); return; } // the successor was changed or removed
@@ -101,14 +103,33 @@ async function remindRecipients(env, deps, now, h, appUrl) {
 
 export async function runScheduled(env, deps) {
   if (!env.DB || !deps.mailer) { console.error('scheduled job skipped: DB or MAILER is not configured'); return; }
-  deps = { ...deps, mailer: suppressing(deps.mailer, env.DB) };
+  deps = { ...deps, mailer: suppressing(deps.mailer, env.DB), failures: [] };
+  deps.alert ??= makeAlert(env, deps);
   const now = deps.now();
-  await startNotices(env, deps, now);
-  const claims = await store.runningClaims(env.DB, RULES.jobBatch);
-  await remindOwners(env, deps, now, claims);
-  await finishNotices(env, deps, now, claims);
-  await each(await store.waitingHandovers(env.DB, RULES.jobBatch), async h => {
-    if (h.expires_at <= now) await endHandover(env, deps, now, h);
-    else await remindRecipients(env, deps, now, h, env.APP_URL);
-  });
+  try {
+    await store.jobStarted(env.DB, 'daily', now);
+    await startNotices(env, deps, now);
+    const claims = await store.runningClaims(env.DB, RULES.jobBatch);
+    await remindOwners(env, deps, now, claims);
+    await finishNotices(env, deps, now, claims);
+    await each(deps, await store.waitingHandovers(env.DB, RULES.jobBatch), async h => {
+      if (h.expires_at <= now) await endHandover(env, deps, now, h);
+      else await remindRecipients(env, deps, now, h, env.APP_URL);
+    });
+  } catch (e) {
+    await recordFailure(env, deps, `the daily job stopped part-way: ${e?.message}`);
+    throw e; // so Cloudflare's own cron history shows it as failed too
+  }
+  if (deps.failures.length) {
+    await recordFailure(env, deps, `${deps.failures.length} step(s) of the daily job failed. The first: ${deps.failures[0]}`);
+    return;
+  }
+  await store.jobOk(env.DB, 'daily', deps.now());
+  await heartbeat(env, deps, true);
+}
+
+async function recordFailure(env, deps, what) {
+  try { await store.jobFailed(env.DB, 'daily', deps.now(), what.slice(0, 300)); } catch (e) { console.error('could not record the failure:', e?.message); }
+  deps.alert('daily_job_failed', what);
+  await heartbeat(env, deps, false);
 }

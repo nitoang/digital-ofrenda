@@ -1,13 +1,12 @@
-// End-to-end: real Chromium, the real pages under their real Content-Security-Policy, the real Worker code, SQLite.
+// End-to-end: a real browser (BROWSER=chromium|firefox|webkit), the real pages under their real Content-Security-Policy, the real Worker code, SQLite.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { chromium } = require('playwright');
 const { startSite } = require('./site');
-const { PNG, tmpFile } = require('./helpers');
+const { PNG, tmpFile, engine, BROWSER } = require('./helpers');
 
 let browser, site;
 const problems = []; // page errors, browser dialogs and Content-Security-Policy violations, from every test
-before(async () => { browser = await chromium.launch(); });
+before(async () => { browser = await engine.launch(); });
 after(async () => {
   await browser.close();
   assert.deepEqual(problems, [], 'no page errors, dialogs or CSP violations anywhere');
@@ -143,7 +142,7 @@ withSite('start an ofrenda, edit it, and it is saved; a visitor sees it read-onl
   await page.reload();
   await page.locator('digital-ofrenda[mode="edit"] .item[aria-label^="Heart"]').waitFor();
   await page.getByRole('link', { name: 'Keepers and sharing' }).waitFor();
-  assert.equal(await page.getByLabel('Link to view this ofrenda').inputValue(), `${site.url}/a/${id}`);
+  assert.equal(await page.getByLabel('Link to view this ofrenda').inputValue(), `${site.url}/s/${id}`);
 
   const v = await visitor();
   await v.page.goto(`${site.url}/a/${id}`);
@@ -673,6 +672,68 @@ withSite('legal pages: privacy and terms are public, linked from every page, and
   await assertLabelled(page);
 });
 
+withSite('privacy: the owner makes an ofrenda private and a stranger sees nothing; turning it back on restores every link', async () => {
+  const { page } = await visitor();
+  await signIn(page, 'maria@example.com');
+  const id = await startOfrenda(page);
+  const saved = await page.evaluate(([id, body]) => fetch('/ofrendas/' + id, { method: 'PUT', headers: { 'content-type': 'application/json' }, body }).then(r => r.status), [id, JSON.stringify(altar())]);
+  assert.equal(saved, 200);
+  const stranger = await visitor();
+  const sees = async () => { await stranger.page.goto(`${site.url}/a/${id}`); return stranger.page.locator('digital-ofrenda').or(stranger.page.getByRole('heading', { name: 'This ofrenda is not ready yet' })).first().waitFor().then(() => stranger.page.locator('digital-ofrenda').count()); };
+  assert.equal(await sees(), 1, 'public by default');
+
+  await page.goto(`${site.url}/a/${id}/keepers`);
+  await page.getByRole('heading', { name: 'Who can see it' }).waitFor();
+  assert.equal(await page.getByLabel('Anyone with the link').isChecked(), true);
+  await page.getByLabel('Only the people who keep it').check();
+  await page.getByRole('button', { name: 'Save', exact: true }).first().click();
+  await page.getByText('This ofrenda is now private.').waitFor();
+  assert.equal(await page.getByLabel('Only the people who keep it').isChecked(), true, 'the choice sticks');
+  await assertLabelled(page);
+
+  assert.equal(await sees(), 0, 'a stranger gets the same page as for one that does not exist');
+  await stranger.page.getByText('or it is private').waitFor();
+  await page.goto(`${site.url}/a/${id}`);
+  await page.locator('digital-ofrenda').waitFor();
+  await page.locator('#private-note').waitFor();
+  assert.equal(await page.locator('#share-url').count(), 0, 'no link to copy while private');
+  assert.equal((await page.request.get(`${site.url}/ofrendas/${id}`)).status(), 200, 'the owner can still open it');
+
+  await page.goto(`${site.url}/a/${id}/keepers`);
+  await page.getByLabel('Anyone with the link').check();
+  await page.getByRole('button', { name: 'Save', exact: true }).first().click();
+  await page.getByText('Anyone with the link can open this ofrenda.').waitFor();
+  assert.equal(await sees(), 1, 'the same link works again');
+  await page.goto(`${site.url}/a/${id}`);
+  await page.locator('#share-url').waitFor();
+});
+
+withSite('link previews: /s/<name> has the preview tags and a picture, sends a person on to the ofrenda, and everything says noindex', async () => {
+  const { page } = await visitor();
+  await signIn(page, 'maria@example.com');
+  const id = await startOfrenda(page);
+  await page.evaluate(([id, body]) => fetch('/ofrendas/' + id, { method: 'PUT', headers: { 'content-type': 'application/json' }, body }).then(r => r.status), [id, JSON.stringify(altar())]);
+
+  const html = await (await page.request.get(`${site.url}/s/${id}`)).text();
+  assert.ok(html.includes('<meta property="og:title" content="Abuela — an ofrenda on Digifrenda">'));
+  assert.ok(html.includes(`<meta property="og:image" content="${site.url}/og.png">`));
+  const img = await page.request.get(`${site.url}/og.png`);
+  assert.equal(img.headers()['content-type'], 'image/png');
+  const bytes = await img.body();
+  assert.deepEqual([bytes.readUInt32BE(16), bytes.readUInt32BE(20)], [1200, 630], 'the size the preview tags promise');
+
+  const stranger = await visitor();
+  await stranger.page.goto(`${site.url}/s/${id}`);
+  await stranger.page.waitForURL(u => u.pathname === `/a/${id}`);
+  await stranger.page.locator('digital-ofrenda').waitFor();
+
+  for (const [path, how] of [[`/a/${id}`, 'the page'], [`/a/${id}/keepers`, 'the keepers page'], [`/s/${id}`, 'the preview'], [`/ofrendas/${id}`, 'the data']]) {
+    assert.equal((await page.request.get(site.url + path)).headers()['x-robots-tag'], 'noindex, nofollow', how);
+  }
+  for (const f of ['a', 'keepers']) assert.match(require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'site', f + '.html'), 'utf8'), /<meta name="robots" content="noindex, nofollow">/, f + '.html');
+  await stranger.ctx.close();
+});
+
 withSite('names: the owner picks a name and /a/<name> opens the same ofrenda, with the id link still working', async () => {
   const { page } = await visitor();
   await signIn(page, 'maria@example.com');
@@ -689,7 +750,7 @@ withSite('names: the owner picks a name and /a/<name> opens the same ofrenda, wi
   // Through the name, the page is still the editor for its owner, and sharing uses the name.
   await page.goto(site.url + '/a/abuela-rosa');
   await page.locator('digital-ofrenda').waitFor();
-  assert.equal(await page.locator('#share-url').inputValue(), site.url + '/a/abuela-rosa');
+  assert.equal(await page.locator('#share-url').inputValue(), site.url + '/s/abuela-rosa', 'the link to paste is the preview page, which sends people on');
   await page.getByRole('link', { name: 'Keepers and sharing' }).click();
   await page.waitForURL(u => u.pathname === '/a/abuela-rosa/keepers');
   await page.getByText('Current name:').waitFor();

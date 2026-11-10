@@ -28,8 +28,8 @@ async function setup({ env: envOver = {}, deps: depsOver = {} } = {}) {
     w, store, env, sent, RULES, db: env.DB?.raw,
     now: () => clock,
     tick: ms => { clock += ms; },
-    settle: async () => { await Promise.all(deferred.splice(0)); },
-    runJob: async () => { await w.runScheduled(env, deps); await Promise.all(deferred.splice(0)); },
+    settle: async () => { while (deferred.length) await Promise.all(deferred.splice(0)); }, // work can queue more work
+    runJob: async () => { try { await w.runScheduled(env, deps); } finally { while (deferred.length) await Promise.all(deferred.splice(0)); } },
     call: (method, path, { body, cookie, origin = ORIGIN, headers } = {}) => handler(new Request('https://api.test' + path, {
       method, headers: { ...(origin ? { origin } : {}), ...(cookie ? { cookie } : {}), ...headers },
       ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }),
@@ -389,7 +389,7 @@ test('co-keepers: an invitation is bound to the invited email and works once', a
   assert.equal((await sam.call('PUT', `/ofrendas/${id}`, altar(frame('a', png())))).status, 200, 'a co-keeper can edit');
   const team = await sam.json('GET', `/ofrendas/${id}/team`);
   assert.deepEqual(team.body.members.map(m => [m.email, m.role]), [['owner@example.com', 'owner'], ['sam@example.com', 'keeper']]);
-  assert.deepEqual(Object.keys(team.body).sort(), ['entitlements', 'members', 'role', 'slug'], 'a co-keeper does not see invites, successor or takeover details');
+  assert.deepEqual(Object.keys(team.body).sort(), ['entitlements', 'members', 'role', 'slug', 'visibility'], 'a co-keeper does not see invites, successor or takeover details');
   assert.deepEqual(team.body.entitlements, { extraPhotos: false, sevenTiers: false });
   assert.equal((await sam.call('POST', `/ofrendas/${id}/invites`, { email: 'z@example.com' })).status, 403);
   assert.equal((await sam.call('PUT', `/ofrendas/${id}/successor`, { email: 'z@example.com' })).status, 403);
@@ -1997,4 +1997,337 @@ test('mail health: if the list cannot be read, the mail is still sent', async ()
   const broken = { prepare() { throw new Error('d1 down'); } };
   await suppressing({ send: async m => void delivered.push(m) }, broken).send({ to: 'a@example.com', subject: 's', text: 't' });
   assert.equal(delivered.length, 1);
+});
+
+// ---------- monitoring: alerts, /healthz, the daily job's own record ----------
+const OPS = { env: { ALERT_EMAIL: 'ops@example.com' } };
+const alertsTo = async t => (await t.mailTo('ops@example.com'));
+// Makes only the queries that mention `table` fail, so the rest of the database (the alert record) keeps working.
+const breakTable = (t, table) => { const real = t.env.DB; const proxy = new Proxy(real, { get: (db, k) => k === 'prepare' ? sql => { if (sql.includes(table)) throw new Error('boom ' + table); return db.prepare(sql); } : db[k] }); t.env.DB = proxy; return () => { t.env.DB = real; }; };
+const breakDb = t => { const real = t.env.DB; t.env.DB = { prepare() { throw new Error('secret table name leaked for maria@example.com'); }, batch() { throw new Error('x'); } }; return () => { t.env.DB = real; }; };
+
+test('alerts: an unhandled error emails the operator once, with the route shape and no personal data', async () => {
+  const t = await setup(OPS);
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  const restore = breakDb(t);
+  const res = await t.call('DELETE', `/ofrendas/${id}/members/${'u'.repeat(40)}`, { cookie: maria.cookie });
+  restore();
+  assert.equal(res.status, 500);
+  assert.equal(await res.text(), '{"error":"server_error"}', 'the person still sees nothing');
+  const [mail] = await alertsTo(t);
+  assert.equal(mail.subject, '[Digifrenda alert] server_error');
+  assert.match(mail.text, /\/ofrendas\/:id\/members\/:id/, 'a route pattern');
+  assert.ok(!mail.text.includes(id), 'not the ofrenda id, which is its link');
+  assert.ok(!mail.text.includes('maria@example.com'), 'not an email address');
+  assert.ok(!mail.text.includes('uuuuuuuuuu'), 'not a long id or token');
+  assert.ok(!('essential' in mail));
+});
+
+test('alerts: a storm of the same problem is one email, then a count after the cool-down', async () => {
+  const t = await setup(OPS);
+  const maria = await t.signIn('maria@example.com');
+  const restore = breakDb(t); // the database being down must not stop the alert from going out
+  for (let i = 0; i < 5; i++) await t.call('GET', '/me', { cookie: maria.cookie });
+  restore();
+  assert.equal((await alertsTo(t)).length, 1, 'five failures, one email');
+  t.tick(t.RULES.alertCooldown + MIN);
+  const restore2 = breakDb(t);
+  await t.call('GET', '/me', { cookie: maria.cookie });
+  restore2();
+  const mails = await alertsTo(t);
+  assert.equal(mails.length, 2);
+  assert.match(mails[1].text, /4 more of this kind happened/);
+});
+
+test('alerts: another instance having just emailed holds this one back; with no ALERT_EMAIL nothing is emailed', async () => {
+  const t = await setup(OPS);
+  const maria = await t.signIn('maria@example.com');
+  t.db.prepare('INSERT INTO alerts (kind, last_sent_at) VALUES (?, ?)').run('server_error', t.now());
+  const restore = breakTable(t, 'altar_members');
+  assert.equal((await t.call('GET', '/me', { cookie: maria.cookie })).status, 500);
+  restore();
+  assert.equal((await alertsTo(t)).length, 0, 'the shared record says it was sent moments ago');
+  assert.equal(t.db.prepare('SELECT suppressed FROM alerts WHERE kind = ?').get('server_error').suppressed, 1, 'and the repeat is counted');
+
+  const other = await setup();
+  const kim = await other.signIn('kim@example.com');
+  const restore2 = breakDb(other);
+  assert.equal((await other.call('GET', '/me', { cookie: kim.cookie })).status, 500);
+  restore2();
+  await other.settle();
+  assert.equal(other.sent.filter(m => /alert/.test(m.subject)).length, 0, 'no ALERT_EMAIL: logged only');
+});
+
+test('alerts: a failing mailer is reported, and a failing alert email never breaks anything', async () => {
+  const broken = await setup({ ...OPS, deps: { mailer: { send: async () => { throw new Error('mailer responded 502'); } } } });
+  const res = await broken.call('POST', '/auth/start', { body: { method: 'code', email: 'new@example.com' } });
+  assert.equal(res.status, 200, 'sign-in start still answers');
+  await broken.settle(); // the alert email fails too: logged, nothing thrown
+
+  const seen = [];
+  const t = await setup({ ...OPS, deps: { mailer: { send: async m => { if (m.to === 'ops@example.com') seen.push(m); else throw new Error('mailer responded 502'); } } } });
+  await t.call('POST', '/auth/start', { body: { method: 'code', email: 'new@example.com' } });
+  await t.settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].subject, '[Digifrenda alert] mail_failed');
+  assert.ok(!seen[0].text.includes('new@example.com'));
+});
+
+test('alerts: money taken but nothing unlocked is reported, with the payment id and no personal data', async () => {
+  const t = await setup(OPS);
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  const post = body => t.call('POST', '/stripe/webhook', { body, origin: null, headers: { 'stripe-signature': t.sign(body) } });
+  await post(checkout({ client_reference_id: id, metadata: { feature: 'sevenTiers' }, payment_intent: 'pi_good' })); // delivered fine
+  assert.equal((await alertsTo(t)).length, 0, 'a normal payment says nothing');
+  for (const over of [{ metadata: { feature: 'admin' } }, { client_reference_id: 'nope-no-such-altar-xx' }, { client_reference_id: '../x' }, { metadata: {} }]) {
+    assert.equal((await post(checkout({ payment_intent: 'pi_lost', ...over }))).status, 200);
+  }
+  const mails = await alertsTo(t);
+  assert.equal(mails.length, 1, 'one email, however many');
+  assert.equal(mails[0].subject, '[Digifrenda alert] paid_not_delivered');
+  assert.match(mails[0].text, /pi_lost/);
+});
+
+test('alerts: a webhook with a bad signature and a refund we cannot trace are reported too', async () => {
+  const t = await setup(OPS);
+  const bad = await t.call('POST', '/stripe/webhook', { body: checkout(), origin: null, headers: { 'stripe-signature': 't=1,v1=00' } });
+  assert.equal(bad.status, 400);
+  const body = refund('pi_unknown');
+  assert.equal((await t.call('POST', '/stripe/webhook', { body, origin: null, headers: { 'stripe-signature': t.sign(body) } })).status, 200);
+  assert.deepEqual((await alertsTo(t)).map(m => m.subject).sort(), ['[Digifrenda alert] refund_untraced', '[Digifrenda alert] stripe_webhook_rejected']);
+});
+
+test('/healthz: public, 200 with no personal data when well, 503 when the database or the configuration is not', async () => {
+  const t = await setup();
+  const ok = await t.call('GET', '/healthz', { origin: null });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await ok.json(), { ok: true, db: true, config: 'ok', dailyJob: { status: 'never', lastOk: null } });
+  const restore = breakDb(t);
+  const down = await t.call('GET', '/healthz', { origin: null });
+  restore();
+  assert.equal(down.status, 503);
+  const text = await down.text();
+  assert.equal(JSON.parse(text).db, false);
+  assert.ok(!text.includes('secret table') && !text.includes('maria'), 'no error details');
+  const unconfigured = await setup({ env: { APP_URL: undefined } });
+  const res = await unconfigured.call('GET', '/healthz', { origin: null });
+  assert.deepEqual([res.status, (await res.json()).config], [503, 'APP_URL']);
+  assert.equal((await setup({ env: { DB: undefined } }).then(x => x.call('GET', '/healthz', { origin: null }))).status, 503);
+  assert.equal((await t.call('POST', '/healthz')).status, 404);
+});
+
+test('/healthz and the daily job: a clean run is healthy, silence for 36 hours is late, and a failing run is reported', async () => {
+  const t = await setup(OPS);
+  const health = async () => (await (await t.call('GET', '/healthz', { origin: null })).json()).dailyJob.status;
+  await t.runJob();
+  assert.equal(await health(), 'ok');
+  assert.ok(t.db.prepare('SELECT ok_at FROM job_runs WHERE name = ?').get('daily').ok_at);
+  t.tick(35 * HOUR);
+  assert.equal(await health(), 'ok');
+  t.tick(2 * HOUR);
+  const late = await t.call('GET', '/healthz', { origin: null });
+  assert.deepEqual([late.status, (await late.json()).dailyJob.status], [503, 'late']);
+  await t.runJob();
+  assert.equal(await health(), 'ok', 'the next clean run recovers');
+
+  // A run that dies part-way: reported, recorded, and re-thrown so Cloudflare's own history shows it.
+  const original = t.store.runningClaims;
+  t.db.exec('ALTER TABLE claims RENAME TO claims_gone');
+  await assert.rejects(t.runJob());
+  t.db.exec('ALTER TABLE claims_gone RENAME TO claims');
+  assert.equal(await health(), 'failed');
+  const [mail] = (await alertsTo(t)).filter(m => /daily_job_failed/.test(m.subject));
+  assert.ok(mail, 'the operator is told');
+  await t.runJob();
+  assert.equal(await health(), 'ok', 'and it recovers');
+  assert.ok(original);
+});
+
+test('daily job: one bad row does not stop the rest, but it is counted and reported', async () => {
+  const t = await setup(OPS);
+  const a = await t.signIn('a@example.com');
+  const id = await t.altarFor(a, altar(frame('x', png())));
+  await a.call('POST', `/ofrendas/${id}/handover`, { email: 'newcomer@example.com', confirm: 'handover' });
+  t.tick(31 * DAY); // the first reminder is due; sending it needs the giver's record
+  const restore = breakTable(t, 'FROM users');
+  await t.runJob(); // does not throw: a failing step is not a failing job
+  restore();
+  const [mail] = (await alertsTo(t)).filter(m => /daily_job_failed/.test(m.subject));
+  assert.ok(mail, 'reported');
+  assert.match(mail.text, /1 step\(s\) of the daily job failed/);
+  assert.ok(!mail.text.includes('a@example.com') && !mail.text.includes(id));
+  const health = await t.call('GET', '/healthz', { origin: null });
+  assert.deepEqual([health.status, (await health.json()).dailyJob.status], [503, 'failed']);
+  await t.runJob();
+  assert.equal((await (await t.call('GET', '/healthz', { origin: null })).json()).dailyJob.status, 'ok', 'a clean run clears it');
+});
+
+test('daily job: the heartbeat is pinged after a clean run, and "/fail" after a bad one, https only', async () => {
+  const pings = [];
+  const t = await setup({ ...OPS, env: { ALERT_EMAIL: 'ops@example.com', HEARTBEAT_URL: 'https://hc.example.test/ping/abc/' }, deps: { fetch: async url => { pings.push(url); return new Response('ok'); } } });
+  await t.runJob();
+  assert.deepEqual(pings, ['https://hc.example.test/ping/abc/']);
+  t.db.exec('ALTER TABLE claims RENAME TO claims_gone');
+  await assert.rejects(t.runJob());
+  t.db.exec('ALTER TABLE claims_gone RENAME TO claims');
+  assert.deepEqual(pings.slice(1), ['https://hc.example.test/ping/abc/fail']);
+
+  const insecure = [];
+  const t2 = await setup({ env: { HEARTBEAT_URL: 'http://hc.example.test/ping' }, deps: { fetch: async url => void insecure.push(url) } });
+  await t2.runJob();
+  assert.deepEqual(insecure, [], 'http addresses are ignored');
+
+  const t3 = await setup({ env: { HEARTBEAT_URL: 'https://hc.example.test/ping' }, deps: { fetch: async () => { throw new Error('network down'); } } });
+  await t3.runJob(); // an unreachable heartbeat never fails the job
+  assert.equal((await (await t3.call('GET', '/healthz', { origin: null })).json()).dailyJob.status, 'ok');
+});
+
+// ---------- who can open an ofrenda: visibility, search engines, and link previews ----------
+async function sharedOfrenda(t) {
+  const owner = await t.signIn('owner@example.com'), keeper = await t.signIn('keeper@example.com'), stranger = await t.signIn('stranger@example.com');
+  const id = await t.altarFor(owner, altar(frame('x', png())));
+  await owner.call('POST', `/ofrendas/${id}/invites`, { email: 'keeper@example.com' });
+  await keeper.call('POST', '/invites/accept', { token: await t.tokenFrom('keeper@example.com', /#i=([\w-]{43})/) });
+  await owner.call('PUT', `/ofrendas/${id}/slug`, { slug: 'abuela-rosa' });
+  return { owner, keeper, stranger, id };
+}
+const setVisibility = (who, id, visibility) => who.json('PUT', `/ofrendas/${id}/visibility`, { visibility });
+
+test('visibility: public by default; the owner can make it private, and only the people who keep it can then open it', async () => {
+  const t = await setup();
+  const { owner, keeper, stranger, id } = await sharedOfrenda(t);
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).status, 200, 'anyone with the link, as before');
+  assert.equal((await owner.json('GET', `/ofrendas/${id}/team`)).body.visibility, 'link');
+
+  assert.deepEqual((await setVisibility(owner, id, 'private')).body, { visibility: 'private' });
+  const missing = await t.call('GET', '/ofrendas/zzzzzzzzzzzz');
+  for (const who of [undefined, stranger.cookie]) {
+    const res = await t.call('GET', `/ofrendas/${id}`, { cookie: who });
+    assert.equal(res.status, 404, 'a stranger, signed in or not');
+    assert.deepEqual(await res.json(), await missing.clone().json(), 'looks exactly like an ofrenda that does not exist');
+  }
+  assert.equal((await owner.call('GET', `/ofrendas/${id}`)).status, 200);
+  assert.equal((await keeper.call('GET', `/ofrendas/${id}`)).status, 200, 'a co-keeper still can');
+  assert.equal((await t.call('GET', '/ofrendas/by-name/abuela-rosa')).status, 404, 'and so does its vanity name');
+  assert.equal((await stranger.call('GET', '/ofrendas/by-name/abuela-rosa')).status, 404);
+  assert.equal((await owner.call('GET', '/ofrendas/by-name/abuela-rosa')).status, 200);
+  assert.equal((await keeper.json('GET', `/ofrendas/${id}/team`)).body.visibility, 'private', 'a co-keeper can see the setting');
+
+  assert.equal((await setVisibility(owner, id, 'link')).body.visibility, 'link');
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).status, 200, 'every earlier link works again');
+  assert.equal((await t.call('GET', '/ofrendas/by-name/abuela-rosa')).status, 200);
+});
+
+test('visibility: only an owner can change it, the value is checked, and CSRF applies', async () => {
+  const t = await setup();
+  const { owner, keeper, stranger, id } = await sharedOfrenda(t);
+  assert.equal((await setVisibility(keeper, id, 'private')).status, 403);
+  assert.equal((await setVisibility(stranger, id, 'private')).status, 403);
+  assert.equal((await t.call('PUT', `/ofrendas/${id}/visibility`, { body: { visibility: 'private' } })).status, 401);
+  for (const bad of ['public', '', null, 1, ['private'], undefined]) assert.equal((await setVisibility(owner, id, bad)).status, 400, String(bad));
+  assert.equal((await t.call('PUT', `/ofrendas/${id}/visibility`, { body: { visibility: 'private' }, cookie: owner.cookie, origin: 'https://evil.example' })).status, 403);
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).status, 200, 'nothing changed');
+  assert.equal((await owner.json('PUT', '/ofrendas/nope0000000x/visibility', { visibility: 'private' })).status, 403);
+});
+
+test('visibility: while private, a view-only link is not sent, but inviting someone to edit still works', async () => {
+  const t = await setup();
+  const { owner, id } = await sharedOfrenda(t);
+  await setVisibility(owner, id, 'private');
+  const refused = await owner.json('POST', `/ofrendas/${id}/share`, { email: 'friend@example.com', access: 'view' });
+  assert.deepEqual([refused.status, refused.body.error], [409, 'ofrenda_private']);
+  assert.equal((await t.mailTo('friend@example.com')).length, 0);
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM view_shares').get().n, 0, 'and it does not count against the daily limit');
+  assert.equal((await owner.call('POST', `/ofrendas/${id}/share`, { email: 'friend@example.com', access: 'edit' })).status, 201);
+  await setVisibility(owner, id, 'link');
+  assert.equal((await owner.call('POST', `/ofrendas/${id}/share`, { email: 'other@example.com', access: 'view' })).status, 201);
+});
+
+test('visibility: a private ofrenda survives a handover, and being passed on does not make it public', async () => {
+  const t = await setup();
+  const { owner, keeper, id } = await sharedOfrenda(t);
+  await setVisibility(owner, id, 'private');
+  assert.equal((await owner.call('POST', `/ofrendas/${id}/handover`, { email: 'keeper@example.com', confirm: 'handover' })).status, 201);
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).status, 404);
+  assert.equal((await keeper.call('GET', `/ofrendas/${id}`)).status, 200);
+});
+
+test('search engines: the ofrenda data and the preview page both say noindex', async () => {
+  const t = await setup();
+  const { id } = await sharedOfrenda(t);
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).headers.get('x-robots-tag'), 'noindex, nofollow');
+  assert.equal((await t.call('GET', `/ofrendas/${id}`)).headers.get('x-robots-tag'), 'noindex, nofollow');
+  assert.equal((await t.call('GET', '/ofrendas/zzzzzzzzzzzz')).headers.get('x-robots-tag'), 'noindex, nofollow', 'even the not-found answer');
+  const page = await t.call('GET', `/s/${id}`);
+  assert.equal(page.headers.get('x-robots-tag'), 'noindex, nofollow');
+  assert.match(await page.text(), /<meta name="robots" content="noindex, nofollow">/);
+});
+
+test('link previews: /s/<name> carries the Open Graph tags and sends a person on to the ofrenda', async () => {
+  const t = await setup();
+  const { id } = await sharedOfrenda(t);
+  for (const ref of [id, 'abuela-rosa']) {
+    const res = await t.call('GET', `/s/${ref}`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /^text\/html/);
+    const html = await res.text();
+    assert.match(html, /<title>Abuela — an ofrenda on Digifrenda<\/title>/);
+    assert.match(html, /<meta property="og:title" content="Abuela — an ofrenda on Digifrenda">/);
+    assert.match(html, /<meta property="og:description" content="A digital ofrenda made to remember Abuela\.">/);
+    assert.ok(html.includes(`<meta property="og:url" content="${ORIGIN}/s/${ref}">`), 'the preview address names itself, so a crawler stays on this page');
+    assert.ok(html.includes(`<meta property="og:image" content="${ORIGIN}/og.png">`), 'always the same generic picture');
+    assert.ok(html.includes(`<meta http-equiv="refresh" content="0;url=/a/${ref}">`));
+    assert.ok(html.includes(`<a href="/a/${ref}">`), 'and a plain link, for anyone the redirect does not reach');
+    assert.ok(!html.includes('data:image') && !/<script/i.test(html), 'no photo from the altar, no script');
+    assert.match(res.headers.get('content-security-policy'), /^default-src 'none'/);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+  }
+});
+
+test('link previews: a private, unsaved, unknown or malformed ofrenda all get the same generic preview', async () => {
+  const t = await setup();
+  const { owner, stranger, id } = await sharedOfrenda(t);
+  const blank = await t.altarFor(owner); // never saved
+  await setVisibility(owner, id, 'private');
+  const generic = async ref => { const html = await (await t.call('GET', `/s/${ref}`, { cookie: stranger.cookie })).text(); return html.replace(new RegExp(ref, 'g'), 'REF'); };
+  const baseline = await generic('zzzzzzzzzzzz');
+  assert.match(baseline, /<title>An ofrenda on Digifrenda<\/title>/);
+  for (const ref of [id, 'abuela-rosa', blank, 'no-such-name', 'AbuelaRosa', 'q9']) {
+    assert.equal(await generic(ref), baseline, `${ref} reveals nothing`);
+  }
+  assert.ok(!baseline.includes('Abuela'));
+  const own = await (await owner.call('GET', `/s/${id}`)).text();
+  assert.match(own, /<title>Abuela — /, 'the owner, who can open it, sees the name');
+  assert.equal((await t.call('GET', '/s/bad%20ref')).status, 404, 'a malformed reference is not a page at all');
+  assert.equal((await t.call('GET', `/s/${'a'.repeat(65)}`)).status, 404);
+  assert.equal((await t.call('POST', `/s/${id}`)).status, 404);
+});
+
+test('link previews: a hostile name cannot break out of the tags, and long or odd names are tamed', async () => {
+  const t = await setup();
+  const owner = await t.signIn('owner@example.com');
+  const nasty = '"><script>alert(1)</script><img src=x onerror=alert(2)>';
+  const id = await t.altarFor(owner, { ...altar(), name: nasty });
+  const html = await (await t.call('GET', `/s/${id}`)).text();
+  assert.ok(!/<script/i.test(html) && !html.includes('<img'), 'angle brackets are escaped');
+  assert.ok(!/content="[^"]*"[^>]*onerror/i.test(html), 'the attribute cannot be closed early');
+  assert.match(html, /&lt;script&gt;/);
+  const long = await t.altarFor(owner, { ...altar(), name: 'María '.repeat(40) });
+  const title = /<title>([^<]*)<\/title>/.exec(await (await t.call('GET', `/s/${long}`)).text())[1];
+  assert.ok(title.length < 120, 'cut to a sensible length');
+  const odd = await t.altarFor(owner, { ...altar(), name: 'Line one\nLine two\u0007 tab\there' });
+  const oddHtml = await (await t.call('GET', `/s/${odd}`)).text();
+  assert.match(oddHtml, /<title>Line one Line two tab here — /, 'one line, no control characters');
+});
+
+test('link previews: need DB and a valid APP_URL, and the preview page is not an open redirect', async () => {
+  const t = await setup({ env: { APP_URL: 'not a url' } });
+  assert.equal((await t.call('GET', '/s/abc')).status, 500);
+  const ok = await setup();
+  for (const ref of ['..%2F..%2Fevil', '//evil.example', 'x:evil', 'javascript:alert(1)']) {
+    const html = await (await ok.call('GET', `/s/${ref}`)).text();
+    assert.ok(!/url=\/\/|url=[a-z]+:/i.test(html), ref);
+  }
 });

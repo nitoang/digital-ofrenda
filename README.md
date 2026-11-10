@@ -162,7 +162,18 @@ How it behaves:
 - Emailed tokens are kept out of URLs: they arrive after the `#`, are removed from the address bar at once, and wait in session storage only while the person signs in.
 - The upgrade dialog explains an option and starts the purchase. A co-keeper sees "ask the owner" instead of a buy button, since only owners can buy for an altar. Platinum is offered alongside the per-altar upgrade.
 
-**Deploying (Cloudflare Pages + Worker, one hostname).** Build command `npm run build:site`, output directory `site`. Then give the Worker these paths on the same hostname, so the page and the API share one origin: `/auth/*`, `/me`, `/me/*`, `/ofrendas`, `/ofrendas/*`, `/invites/*`, `/successor/*`, `/stripe/*`, `/resend/*`. Pages serves everything else (note `/successor` with nothing after it is a page). Set your Turnstile site key in `site/config.js`. Cloudflare's Turnstile documentation lists the exact content-security-policy entries it needs; `site/_headers` allows the usual ones, so check them against the current docs.
+**Deploying (Cloudflare Pages + Worker, one hostname).** Build command `npm run build:site`, output directory `site`. Then give the Worker these paths on the same hostname, so the page and the API share one origin: `/auth/*`, `/me`, `/me/*`, `/ofrendas`, `/ofrendas/*`, `/invites/*`, `/successor/*`, `/stripe/*`, `/resend/*`, `/s/*`, `/healthz`. Pages serves everything else (note `/successor` with nothing after it is a page). Set your Turnstile site key in `site/config.js`. Cloudflare's Turnstile documentation lists the exact content-security-policy entries it needs; `site/_headers` allows the usual ones, so check them against the current docs.
+
+**Who can see an ofrenda.** By default anyone with the link can view it (as before). The owner can make it **private** on the Keepers page (`PUT /ofrendas/:id/visibility {visibility: "link" | "private"}`): then only the people who keep it can open it, every link stops working for everyone else, including ones already sent, and a stranger gets exactly the answer a missing ofrenda gets, so nothing says it exists. Turning it back on brings the same links back. While private, a view-only link is not emailed (it would open nothing), but inviting someone to edit still works. It is a link-secrecy setting, not encryption: the owner's own export and the keepers see everything. There is deliberately no "new link" button, because an ofrenda's address *is* its link; to cut off a leaked link for good, make it private.
+
+**Search engines and link previews.** Ofrendas are memorials, so every ofrenda page, its data and its preview say `noindex, nofollow` (header and meta tag). The link to paste into chats is `/s/<name or id>` (the share box shows it): a tiny page (`server/preview.mjs`) with Open Graph and Twitter tags, a title like "Abuela — an ofrenda on Digifrenda", and the generic `site/og.png` (`node scripts/make-og.js` redraws it), which then sends people on to `/a/<name>` at once. Crawlers never run JavaScript, which is why the real page cannot do this itself. A private, unsaved or unknown ofrenda gets the same generic preview, so previews reveal nothing. The preview never shows a photo from the altar. Existing `/a/...` links keep working, just without a rich preview. Route `/s/*` to the Worker.
+
+**Monitoring.** Problems reach you without anyone reading logs (`server/alerts.mjs`):
+- `GET /healthz` answers 200 when the database works, the configuration is complete and the daily job ran cleanly in the last 36 hours, otherwise 503, with no personal data. Point an uptime monitor (UptimeRobot, Better Stack, Cloudflare Health Checks) at it.
+- Set `ALERT_EMAIL` and the Worker emails you about: unhandled server errors, a failing mailer, a failing daily job, a Stripe webhook that fails its signature check (the secret may be wrong), **a payment that unlocked nothing** (money taken, nothing delivered), and a refund it cannot trace. One email per kind per 6 hours, saying how many more happened. Alerts name a route pattern and a short message, never an address, token, ofrenda id or request body, and still go out when the database is down.
+- Set `HEARTBEAT_URL` (for example a healthchecks.io check) and the daily job pings it after a clean run and `<url>/fail` after a bad one. That service alerts you when the pings stop, which is the only way to notice a job that never ran at all. Only `https` addresses are used.
+- The daily job records each run (`job_runs`), counts steps that fail (a row that fails every day no longer fails silently), and re-throws a crash so Cloudflare's own cron history shows it too.
+- `[observability]` is on in both example configs, so Workers Logs keep the output.
 
 **Try it locally:** `npm run dev`, then open http://localhost:8787. It runs the real pages and the real Worker code on a throwaway in-memory database, and prints the emails (with your sign-in code) in the terminal. Everything resets when you stop it.
 
@@ -172,9 +183,13 @@ Browser tests (Playwright + Node's built-in test runner) load the pages straight
 
 ```sh
 npm install
-npx playwright install chromium   # first time only
-npm test
+npx playwright install chromium   # first time only (also: firefox, webkit)
+npm test                          # everything, in Chromium
+npm run test:unit                 # the Worker, validator, mailer and typo tests: no browser
+BROWSER=firefox npm run test:browser   # the component and the website in Firefox (or webkit)
 ```
+
+CI runs the unit tests once and the browser tests in Chromium, Firefox and WebKit (Safari's engine). Two tests that send real touch events through the Chrome DevTools Protocol run in Chromium only; they say so when skipped.
 
 `tests/site.test.js` drives the whole website in Chromium against the real Worker code (sign-in, editing, limits, co-keepers, the successor handover, hostile text, open redirects, and no policy violations). `tests/server.test.js` (the validator) and `tests/worker.test.js` (sign-in, sessions, altars, co-keepers, successor takeover and the Stripe webhook, running the real SQL on SQLite) need no browser; the Worker tests use `node:sqlite`, so Node 22 or newer. The browser tests cover the default altar, Person / Pet / Mixed, 3 vs 7 tiers and the upgrade event, Start over, multiple photos, old single-photo saves, export/import (with the two-click confirm), and sanitizing of hostile imports. They fail on any page error or browser dialog.
 
@@ -185,7 +200,7 @@ npm test
   `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'`.
   Add `connect-src` for your own backend if you use shared storage, and set `frame-ancestors` as an HTTP header (a `<meta>` tag can't).
 - `shared.html` runs inside the claude.ai artifact host, which sets its own policy, so it has no CSP tag of its own.
-- GitHub Actions runs `npm test` on every pull request.
+- GitHub Actions runs the unit tests and the browser tests (Chromium, Firefox, WebKit) on every pull request.
 - To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## License

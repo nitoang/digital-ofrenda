@@ -3,6 +3,9 @@ main = "worker.mjs"
 compatibility_date = "2025-01-01"
 workers_dev = false               # no public address: only the API Worker can call it
 
+[observability]
+enabled = true
+
 [vars]
 MAIL_FROM = "Digifrenda <hello@digifrenda.duelokit.com>"
 

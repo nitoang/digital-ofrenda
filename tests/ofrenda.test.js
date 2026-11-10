@@ -1,6 +1,6 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { launch, PNG, tmpFile, solidPng } = require('./helpers');
+const { launch, PNG, tmpFile, solidPng, TOUCH_SKIP } = require('./helpers');
 
 let h;
 before(async () => { h = await launch(); });
@@ -360,7 +360,7 @@ async function phone() {
   return { ...a, drag, tap, centre, bring, scrollY: () => a.page.evaluate(() => scrollY) };
 }
 
-test('touch: a swipe over the altar or the tray scrolls the page, in edit and view mode', async () => {
+test('touch: a swipe over the altar or the tray scrolls the page, in edit and view mode', { skip: TOUCH_SKIP }, async () => {
   const t = await phone();
   for (const mode of ['edit', 'view']) {
     await t.el.evaluate((e, m) => e.setAttribute('mode', m), mode);
@@ -379,7 +379,7 @@ test('touch: a swipe over the altar or the tray scrolls the page, in edit and vi
   await t.ctx.close();
 });
 
-test('touch: tap a tray button to add, tap vs wobble on a candle, drag handles', async () => {
+test('touch: tap a tray button to add, tap vs wobble on a candle, drag handles', { skip: TOUCH_SKIP }, async () => {
   const t = await phone();
   const count = () => t.el.locator('.item').count();
   const n = await count();

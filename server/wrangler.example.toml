@@ -18,13 +18,17 @@ service = "digital-ofrenda-mailer"
 #   [[routes]]
 #   pattern = "ofrenda.example.com/auth/*"
 #   zone_name = "example.com"
-# Patterns: /auth/*   /me   /me/*   /checkout   /ofrendas   /ofrendas/*   /invites/*   /successor/*   /stripe/*   /resend/*
+# Patterns: /auth/*   /me   /me/*   /checkout   /ofrendas   /ofrendas/*   /invites/*   /successor/*   /stripe/*   /resend/*   /s/*   /healthz
 # ("/successor" with nothing after it is a web page, not part of the API.)
 
 # The daily job: successor notices and reminders, and handovers waiting for someone to sign up (server/scheduled.mjs).
 # Once a day is plenty; the minute is deliberately not :00.
 [triggers]
 crons = ["17 14 * * *"]
+
+# Keep the Worker's logs (Workers Logs) so a failed request or daily job can be looked into afterwards.
+[observability]
+enabled = true
 
 [vars]
 # Serve your page and this Worker from this same origin: sign-in is a cookie and there is no CORS.
@@ -35,6 +39,11 @@ STARTER_OFRENDA = "1"
 # STRIPE_PRICE_EXTRA_PHOTOS = "price_..."
 # STRIPE_PRICE_SEVEN_TIERS = "price_..."
 # STRIPE_PRICE_PLATINUM = "price_..."
+# Where problems are emailed (unhandled errors, failed mail, a failed daily job, a payment that unlocked nothing):
+# ALERT_EMAIL = "you@example.com"
+# A dead man's switch the daily job pings after a clean run (and <url>/fail after a bad one), for example a
+# healthchecks.io check. https only. Point an uptime monitor at GET /healthz as well.
+# HEARTBEAT_URL = "https://hc-ping.com/your-check-id"
 # TURNSTILE_DISABLED = "1"                      # local development ONLY; never in production
 
 # Secrets (never commit them):

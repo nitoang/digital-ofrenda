@@ -22,7 +22,10 @@ export const mailerFromEnv = env =>
     : null;
 
 // Send after the response goes out, and never let a mail failure break the request.
-export const queueMail = (deps, work) => deps.defer(Promise.resolve().then(work).catch(e => console.error('email not sent:', e?.message)));
+export const queueMail = (deps, work) => deps.defer(Promise.resolve().then(work).catch(e => {
+  console.error('email not sent:', e?.message);
+  deps.alert?.('mail_failed', 'An email could not be sent (' + e?.message + '). Sign-in and invitation emails may not be arriving.');
+}));
 
 const signoff = '\n\nDigifrenda 🧡';
 

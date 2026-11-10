@@ -34,17 +34,24 @@ export async function verifyStripe(rawBody, header, secret, now = Date.now(), to
 export async function handleStripe(request, env, deps) {
   const raw = await readBody(request, 1_000_000);
   if (raw === null || !env.STRIPE_WEBHOOK_SECRET) return json({ error: 'bad_request' }, 400);
-  if (!(await verifyStripe(raw, request.headers.get('stripe-signature'), env.STRIPE_WEBHOOK_SECRET, deps.now()))) return json({ error: 'bad_signature' }, 400);
+  if (!(await verifyStripe(raw, request.headers.get('stripe-signature'), env.STRIPE_WEBHOOK_SECRET, deps.now()))) {
+    deps.alert?.('stripe_webhook_rejected', 'A request to /stripe/webhook failed signature checking. If this keeps happening, STRIPE_WEBHOOK_SECRET may not match the one in Stripe, and payments will not unlock anything.');
+    return json({ error: 'bad_signature' }, 400);
+  }
   let event;
   try { event = JSON.parse(raw); } catch { return json({ error: 'bad_json' }, 400); }
   const s = event?.data?.object;
   const feature = s?.metadata?.feature;
-  if (PAID_EVENTS.includes(event?.type) && s?.payment_status === 'paid' && ID_RE.test(s.client_reference_id || '')) {
-    let ok = true; // idempotent: Stripe may deliver twice
-    if (feature === 'platinum') ok = await store.setPlan(env.DB, s.client_reference_id, 'platinum');
-    else if (FEATURES.includes(feature)) ok = await store.grantFeature(env.DB, s.client_reference_id, feature, deps.now());
-    if (!ok) console.error('paid checkout for something that does not exist:', feature, s.client_reference_id); // 200 anyway: a retry would not help
-    else if (typeof s.payment_intent === 'string' && ID_RE.test(s.payment_intent) && (feature === 'platinum' || FEATURES.includes(feature))) {
+  if (PAID_EVENTS.includes(event?.type) && s?.payment_status === 'paid') {
+    const known = ID_RE.test(s.client_reference_id || '') && (feature === 'platinum' || FEATURES.includes(feature));
+    let ok = known; // idempotent: Stripe may deliver twice
+    if (known && feature === 'platinum') ok = await store.setPlan(env.DB, s.client_reference_id, 'platinum');
+    else if (known) ok = await store.grantFeature(env.DB, s.client_reference_id, feature, deps.now());
+    // Money was taken and nothing was unlocked. 200 anyway (a retry would not help), but a person must look at it.
+    if (!ok) {
+      console.error('paid checkout for something that does not exist:', feature, s.client_reference_id);
+      deps.alert?.('paid_not_delivered', `Stripe says a checkout was paid (payment ${typeof s.payment_intent === 'string' ? s.payment_intent : 'unknown'}) but it unlocked nothing: feature "${String(feature).slice(0, 30)}", reference "${String(s.client_reference_id).slice(0, 30)}". Check it in Stripe and refund or fix it by hand.`);
+    } else if (typeof s.payment_intent === 'string' && ID_RE.test(s.payment_intent)) {
       await store.recordPurchase(env.DB, { paymentIntent: s.payment_intent, feature, reference: s.client_reference_id, now: deps.now() });
     }
   } else if (REFUND_EVENTS.includes(event?.type) && s?.refunded === true) {
@@ -62,6 +69,7 @@ async function handleRefund(env, deps, charge) {
   const reference = purchase?.reference ?? charge.metadata?.reference;
   if (!(feature === 'platinum' || FEATURES.includes(feature)) || !ID_RE.test(reference || '')) {
     console.error('refund for a payment we cannot trace:', pi);
+    deps.alert?.('refund_untraced', `Stripe refunded a payment (${pi || 'no payment id'}) that we cannot match to an upgrade, so nothing was taken back. Check it in Stripe.`);
     return; // 200 anyway: a retry would not help
   }
   if (pi && purchase) await store.markRefunded(env.DB, pi, deps.now());
