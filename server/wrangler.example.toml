@@ -18,7 +18,7 @@ service = "digital-ofrenda-mailer"
 #   [[routes]]
 #   pattern = "ofrenda.example.com/auth/*"
 #   zone_name = "example.com"
-# Patterns: /auth/*   /me   /me/*   /checkout   /ofrendas   /ofrendas/*   /invites/*   /successor/*   /stripe/*
+# Patterns: /auth/*   /me   /me/*   /checkout   /ofrendas   /ofrendas/*   /invites/*   /successor/*   /stripe/*   /resend/*
 # ("/successor" with nothing after it is a web page, not part of the API.)
 
 # The daily job: successor notices and reminders, and handovers waiting for someone to sign up (server/scheduled.mjs).
@@ -41,6 +41,7 @@ STARTER_OFRENDA = "1"
 #   npx wrangler secret put TURNSTILE_SECRET
 #   npx wrangler secret put STRIPE_WEBHOOK_SECRET
 #   npx wrangler secret put STRIPE_SECRET_KEY
+#   npx wrangler secret put RESEND_WEBHOOK_SECRET      # whsec_... from Resend > Webhooks (bounces and spam complaints)
 #
 # Also add Cloudflare rate-limiting rules (dashboard: Security > WAF > Rate limiting rules) for
 # POST /auth/start, /auth/code, /auth/redeem and /checkout.

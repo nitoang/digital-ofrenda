@@ -1887,3 +1887,114 @@ test('export: the upgrades an ofrenda has are listed', async () => {
   const [o] = (await (await a.call('GET', '/me/export')).json()).ofrendas;
   assert.deepEqual(o.upgrades.map(u => u.feature), ['extraPhotos']);
 });
+
+// ---------- bounces and spam complaints ----------
+const WEBHOOK_SECRET = 'whsec_' + Buffer.from('a-test-signing-key-for-resend!!').toString('base64');
+function svix(t, payload, { secret = WEBHOOK_SECRET, id = 'msg_1', at = t.now(), signature } = {}) {
+  const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  const ts = String(Math.floor(at / 1000));
+  const mac = crypto.createHmac('sha256', Buffer.from(secret.replace('whsec_', ''), 'base64')).update(`${id}.${ts}.${body}`).digest('base64');
+  return t.call('POST', '/resend/webhook', { body, origin: null, headers: { 'svix-id': id, 'svix-timestamp': ts, 'svix-signature': signature ?? `v1,${mac}` } });
+}
+const bounced = (to, type = 'Permanent') => ({ type: 'email.bounced', data: { to: [to], bounce: { type } } });
+const WITH_HOOK = { env: { RESEND_WEBHOOK_SECRET: WEBHOOK_SECRET } };
+
+test('mail health: the webhook needs a valid Svix signature, a fresh timestamp, and its secret configured', async () => {
+  const t = await setup(WITH_HOOK);
+  const ev = bounced('gone@example.com');
+  assert.equal((await svix(t, ev)).status, 200);
+  assert.equal((await svix(t, ev, { secret: 'whsec_' + Buffer.from('another-key').toString('base64') })).status, 400, 'signed with a different secret');
+  assert.equal((await svix(t, ev, { signature: 'v1,AAAA' })).status, 400);
+  assert.equal((await svix(t, ev, { at: t.now() - 10 * MIN })).status, 400, 'a replayed old delivery');
+  assert.equal((await svix(t, '{"type":"email.bounced"')).status, 400, 'signed but not JSON');
+  const missing = await t.call('POST', '/resend/webhook', { body: JSON.stringify(ev), origin: null });
+  assert.equal(missing.status, 400, 'unsigned');
+  const unconfigured = await setup();
+  assert.equal((await svix(unconfigured, ev)).status, 500, 'no secret set: refuses instead of trusting anyone');
+});
+
+test('mail health: a permanent bounce stops all mail to that address, and only a hash is stored', async () => {
+  const t = await setup(WITH_HOOK);
+  const a = await t.signIn('a@example.com');
+  const id = await t.altarFor(a, altar(frame('x', png())));
+  assert.equal((await svix(t, bounced('Typo@Example.com'))).status, 200);
+  const row = t.db.prepare('SELECT * FROM mail_suppressions').get();
+  assert.equal(row.email_hash, sha('typo@example.com'));
+  assert.equal(row.reason, 'bounce');
+  assert.ok(!JSON.stringify(t.db.prepare('SELECT * FROM mail_suppressions').all()).includes('typo@'), 'the address itself is not stored');
+
+  const before = t.sent.length;
+  assert.equal((await a.call('POST', `/ofrendas/${id}/invites`, { email: 'typo@example.com' })).status, 201, 'the invitation itself still succeeds');
+  await t.settle();
+  assert.equal((await t.mailTo('typo@example.com')).length, 0, 'nothing is sent to a bounced address');
+  assert.equal(t.sent.length, before, 'and other mail is unaffected');
+  await a.call('POST', `/ofrendas/${id}/invites`, { email: 'fine@example.com' });
+  assert.equal((await t.mailTo('fine@example.com')).length, 1);
+});
+
+test('mail health: sign-in emails to a bounced address are not sent either, and the reply looks the same', async () => {
+  const t = await setup(WITH_HOOK);
+  await svix(t, bounced('gone@example.com'));
+  const res = await t.call('POST', '/auth/start', { body: { method: 'code', email: 'gone@example.com' } });
+  const known = await t.call('POST', '/auth/start', { body: { method: 'code', email: 'new@example.com' } });
+  assert.deepEqual([res.status, Object.keys(await res.json())], [known.status, Object.keys(await known.json())], 'nothing tells a stranger the address bounced');
+  assert.equal((await t.mailTo('gone@example.com')).length, 0);
+  assert.equal((await t.mailTo('new@example.com')).length, 1);
+});
+
+test('mail health: a temporary bounce or anything else changes nothing', async () => {
+  const t = await setup(WITH_HOOK);
+  for (const ev of [bounced('full@example.com', 'Transient'), bounced('full@example.com', 'Undetermined'),
+    { type: 'email.delivered', data: { to: ['full@example.com'] } }, { type: 'email.opened', data: { to: ['full@example.com'] } }, { type: 'email.bounced' }, { type: 'email.bounced', data: { to: 'not-a-list', bounce: { type: 'Permanent' } } }, {}, []]) {
+    assert.equal((await svix(t, ev)).status, 200);
+  }
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM mail_suppressions').get().n, 0);
+});
+
+test('mail health: someone who marked mail as spam gets no ordinary mail but can still sign in and change their email', async () => {
+  const t = await setup(WITH_HOOK);
+  const a = await t.signIn('a@example.com');
+  const id = await t.altarFor(a, altar(frame('x', png())));
+  const b = await t.signIn('b@example.com');
+  await svix(t, { type: 'email.complained', data: { to: ['b@example.com'] } });
+  assert.equal(t.db.prepare('SELECT reason FROM mail_suppressions').get().reason, 'complaint');
+
+  const mailsToB = (await t.mailTo('b@example.com')).length;
+  await a.call('POST', `/ofrendas/${id}/invites`, { email: 'b@example.com' });
+  assert.equal((await t.mailTo('b@example.com')).length, mailsToB, 'an invitation is not sent');
+
+  const again = await t.signIn('b@example.com'); // signIn waits for the code email, so it must arrive
+  assert.equal(again.email, 'b@example.com');
+  const subject = (await t.mailTo('b@example.com')).at(-1).subject;
+  assert.match(subject, /\d{6}/, 'the sign-in code still arrives');
+  assert.ok(!('essential' in (await t.mailTo('b@example.com')).at(-1)), 'the internal flag never reaches the mailer');
+
+  assert.equal((await b.call('POST', '/me/email', { email: 'b2@example.com' })).status, 200);
+  assert.equal((await t.mailTo('b2@example.com')).length, 1, 'the email-change code goes to the new address');
+});
+
+test('mail health: a bounce outranks a complaint, repeats are harmless, and the daily job skips suppressed addresses too', async () => {
+  const t = await setup(WITH_HOOK);
+  const ev = { type: 'email.complained', data: { to: ['x@example.com'] } };
+  await svix(t, ev); await svix(t, ev, { id: 'msg_2' });
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM mail_suppressions').get().n, 1);
+  await svix(t, bounced('x@example.com'), { id: 'msg_3' });
+  assert.equal(t.db.prepare('SELECT reason FROM mail_suppressions').get().reason, 'bounce');
+  await svix(t, ev, { id: 'msg_4' });
+  assert.equal(t.db.prepare('SELECT reason FROM mail_suppressions').get().reason, 'bounce', 'a later complaint does not soften it');
+
+  const { suppressing } = await import('../server/mailhealth.mjs');
+  const delivered = [];
+  const mailer = suppressing({ send: async m => void delivered.push(m) }, t.env.DB);
+  await mailer.send({ to: 'X@Example.com ', subject: 's', text: 't' });
+  await mailer.send({ to: 'ok@example.com', subject: 's', text: 't', essential: true });
+  assert.deepEqual(delivered.map(m => m.to), ['ok@example.com'], 'any case or spacing of a suppressed address is skipped');
+});
+
+test('mail health: if the list cannot be read, the mail is still sent', async () => {
+  const { suppressing } = await import('../server/mailhealth.mjs');
+  const delivered = [];
+  const broken = { prepare() { throw new Error('d1 down'); } };
+  await suppressing({ send: async m => void delivered.push(m) }, broken).send({ to: 'a@example.com', subject: 's', text: 't' });
+  assert.equal(delivered.length, 1);
+});

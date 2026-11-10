@@ -565,6 +565,37 @@ withShop('the page itself only follows an address on Stripe, even if told otherw
 
 // ---------- account: email, deletion, and the legal pages ----------
 
+withSite('sign-in: a likely typo in the address is caught before anything is sent, and the person can still overrule it', async () => {
+  const { page } = await visitor();
+  await page.goto(site.url + '/signin');
+  const from = site.sent.length;
+  await page.getByLabel('Your email address').fill('maria@gmial.com');
+  await page.getByLabel('Email me a 6-digit code').check();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByText('Did you mean').waitFor();
+  assert.equal(await page.getByRole('alert').filter({ hasText: 'Did you mean' }).locator('strong').innerText(), 'maria@gmail.com');
+  assert.equal(site.sent.length, from, 'nothing is sent while we ask');
+  await page.getByRole('button', { name: 'Use maria@gmail.com' }).click();
+  assert.equal(await page.getByLabel('Your email address').inputValue(), 'maria@gmail.com');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByLabel('Code', { exact: true }).fill(await site.codeFor('maria@gmail.com', from));
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.waitForURL(u => !u.pathname.startsWith('/signin'));
+  assert.ok(!site.sent.slice(from).some(m => m.to === 'maria@gmial.com'), 'nothing went to the mistyped address');
+
+  // "No, send to what I typed": a real but unusual address is never blocked.
+  const other = await visitor();
+  await other.page.goto(site.url + '/signin');
+  const from2 = site.sent.length;
+  await other.page.getByLabel('Your email address').fill('lola@gmial.com');
+  await other.page.getByLabel('Email me a 6-digit code').check();
+  await other.page.getByRole('button', { name: 'Continue' }).click();
+  await other.page.getByRole('button', { name: 'No, send to what I typed' }).click();
+  await other.page.getByLabel('Code', { exact: true }).fill(await site.codeFor('lola@gmial.com', from2));
+  await other.page.getByRole('button', { name: 'Sign in' }).click();
+  await other.page.waitForURL(u => !u.pathname.startsWith('/signin'));
+});
+
 withSite('account: changing the email address needs the code sent to the new one', async () => {
   const { page } = await visitor();
   await signIn(page, 'maria@example.com');

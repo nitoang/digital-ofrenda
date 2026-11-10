@@ -388,3 +388,10 @@ export const listFeatures = (db, altarId) => all(db, 'SELECT name, granted_at FR
 export const visitDays = async (db, altarId, userId) =>
   (await one(db, 'SELECT days FROM altar_visits WHERE altar_id = ? AND user_id = ?', altarId, userId))?.days ?? 0;
 export const getUserCreated = async (db, userId) => (await one(db, 'SELECT created_at FROM users WHERE id = ?', userId))?.created_at ?? null;
+
+// ---------- addresses we no longer email ----------
+// A bounce wins over a complaint, and a repeat of either changes nothing, so the provider may deliver an event twice.
+export const addSuppression = (db, { emailHash, reason, now }) =>
+  run(db, `INSERT INTO mail_suppressions (email_hash, reason, created_at) VALUES (?, ?, ?)
+    ON CONFLICT (email_hash) DO UPDATE SET reason = 'bounce' WHERE excluded.reason = 'bounce' AND mail_suppressions.reason != 'bounce'`, emailHash, reason, now);
+export const getSuppression = async (db, emailHash) => (await one(db, 'SELECT reason FROM mail_suppressions WHERE email_hash = ?', emailHash))?.reason ?? null;
