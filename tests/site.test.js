@@ -36,6 +36,14 @@ async function signIn(page, email, { from = site.sent.length } = {}) {
   await page.waitForURL(u => !u.pathname.startsWith('/signin'));
 }
 
+// Opening a link from an email: always a fresh document, like clicking it in a mail app. Going straight from
+// /signin to /signin#t=... would be a hash-only change, which the page answers by reloading itself, and that
+// races with goto() ("net::ERR_ABORTED"), so start from a blank page.
+async function openEmailedLink(page, url) {
+  await page.goto('about:blank');
+  await page.goto(url);
+}
+
 async function until(fn, what = String(fn), ms = 5000) {
   const end = Date.now() + ms;
   for (;;) {
@@ -109,7 +117,7 @@ withSite('the emailed sign-in link needs a button press, and its token leaves th
   await page.getByRole('button', { name: 'Continue' }).click(); // the link is the default choice
   await page.getByText('We sent a sign-in link').waitFor();
   const token = await site.linkFrom('maria@example.com', /signin#t=([\w-]{43})/);
-  await page.goto(`${site.url}/signin#t=${token}`);
+  await openEmailedLink(page, `${site.url}/signin#t=${token}`);
   const go = page.getByRole('button', { name: 'Continue to sign in' });
   await go.waitFor();
   assert.equal(new URL(page.url()).hash, '', 'the token is gone from the address bar');
@@ -118,7 +126,7 @@ withSite('the emailed sign-in link needs a button press, and its token leaves th
   await page.waitForURL(u => u.pathname === '/my');
   // The same link a second time is refused politely.
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
-  await page.goto(`${site.url}/signin#t=${token}`);
+  await openEmailedLink(page, `${site.url}/signin#t=${token}`);
   await page.getByRole('button', { name: 'Continue to sign in' }).click();
   await page.getByRole('alert').filter({ hasText: 'expired or was already used' }).waitFor();
   await ctx.close();
@@ -251,7 +259,7 @@ withSite('co-keepers: invite by email, accept in the browser, edit together, rem
 
   const token = await site.linkFrom('sam@example.com', /\/invite#i=([\w-]{43})/);
   const sam = await visitor();
-  await sam.page.goto(`${site.url}/invite#i=${token}`);
+  await openEmailedLink(sam.page, `${site.url}/invite#i=${token}`);
   await sam.page.waitForURL(u => u.pathname === '/signin');
   assert.ok(!sam.page.url().includes(token), 'the invitation token never goes into a URL we send to the server');
   await signIn(sam.page, 'sam@example.com');
@@ -266,13 +274,13 @@ withSite('co-keepers: invite by email, accept in the browser, edit together, rem
 
   // The used link is useless to anyone else.
   const other = await visitor();
-  await other.page.goto(`${site.url}/invite#i=${token}`);
+  await openEmailedLink(other.page, `${site.url}/invite#i=${token}`);
   await other.page.waitForURL(u => u.pathname === '/signin');
   await signIn(other.page, 'bystander@example.com');
   await other.page.getByRole('button', { name: 'Accept the invitation' }).click();
   await other.page.getByRole('alert').filter({ hasText: 'expired, was already used, or was sent to a different email' }).waitFor();
   // Already signed in, opening the link: the token still leaves the address bar at once.
-  await other.page.goto(`${site.url}/invite#i=${token}`);
+  await openEmailedLink(other.page, `${site.url}/invite#i=${token}`);
   await other.page.getByRole('button', { name: 'Accept the invitation' }).waitFor();
   assert.equal(new URL(other.page.url()).hash, '', 'the invitation token is removed from the address bar');
 
@@ -380,7 +388,7 @@ withSite('successor: agree, wait out the silence, ask, wait out the notice, take
 
   const token = await site.linkFrom('heir@example.com', /\/successor#s=([\w-]{43})/);
   const heir = await visitor();
-  await heir.page.goto(`${site.url}/successor#s=${token}`);
+  await openEmailedLink(heir.page, `${site.url}/successor#s=${token}`);
   await heir.page.waitForURL(u => u.pathname === '/signin');
   await signIn(heir.page, 'heir@example.com');
   await heir.page.waitForURL(u => u.pathname === '/successor');
@@ -518,7 +526,7 @@ withShop('a co-keeper is told to ask the owner, and cancelling a payment says no
   await owner.page.getByText('Invitation sent.').waitFor();
 
   const sam = await visitor();
-  await sam.page.goto(`${site.url}/invite#i=${await site.linkFrom('sam@example.com', /\/invite#i=([\w-]{43})/)}`);
+  await openEmailedLink(sam.page, `${site.url}/invite#i=${await site.linkFrom('sam@example.com', /\/invite#i=([\w-]{43})/)}`);
   await sam.page.waitForURL(u => u.pathname === '/signin');
   await signIn(sam.page, 'sam@example.com');
   await sam.page.getByRole('button', { name: 'Accept the invitation' }).click();
@@ -564,6 +572,37 @@ withShop('the page itself only follows an address on Stripe, even if told otherw
 });
 
 // ---------- account: email, deletion, and the legal pages ----------
+
+withSite('sign-in: a likely typo in the address is caught before anything is sent, and the person can still overrule it', async () => {
+  const { page } = await visitor();
+  await page.goto(site.url + '/signin');
+  const from = site.sent.length;
+  await page.getByLabel('Your email address').fill('maria@gmial.com');
+  await page.getByLabel('Email me a 6-digit code').check();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByText('Did you mean').waitFor();
+  assert.equal(await page.getByRole('alert').filter({ hasText: 'Did you mean' }).locator('strong').innerText(), 'maria@gmail.com');
+  assert.equal(site.sent.length, from, 'nothing is sent while we ask');
+  await page.getByRole('button', { name: 'Use maria@gmail.com' }).click();
+  assert.equal(await page.getByLabel('Your email address').inputValue(), 'maria@gmail.com');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByLabel('Code', { exact: true }).fill(await site.codeFor('maria@gmail.com', from));
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.waitForURL(u => !u.pathname.startsWith('/signin'));
+  assert.ok(!site.sent.slice(from).some(m => m.to === 'maria@gmial.com'), 'nothing went to the mistyped address');
+
+  // "No, send to what I typed": a real but unusual address is never blocked.
+  const other = await visitor();
+  await other.page.goto(site.url + '/signin');
+  const from2 = site.sent.length;
+  await other.page.getByLabel('Your email address').fill('lola@gmial.com');
+  await other.page.getByLabel('Email me a 6-digit code').check();
+  await other.page.getByRole('button', { name: 'Continue' }).click();
+  await other.page.getByRole('button', { name: 'No, send to what I typed' }).click();
+  await other.page.getByLabel('Code', { exact: true }).fill(await site.codeFor('lola@gmial.com', from2));
+  await other.page.getByRole('button', { name: 'Sign in' }).click();
+  await other.page.waitForURL(u => !u.pathname.startsWith('/signin'));
+});
 
 withSite('account: changing the email address needs the code sent to the new one', async () => {
   const { page } = await visitor();

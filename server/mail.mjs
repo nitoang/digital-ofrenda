@@ -29,7 +29,7 @@ const signoff = '\n\nDigifrenda 🧡';
 // The person chose how to sign in, so each email carries one thing: a link (a button on the page) or a 6-digit code.
 // The code goes in the subject so it shows up in a notification.
 export const signInMessage = ({ to, link, code }) => ({
-  to,
+  to, essential: true,
   subject: link ? 'Your Digifrenda sign-in link' : `Your Digifrenda sign-in code is ${code}`,
   text: [
     link
@@ -95,7 +95,7 @@ export const handoverMessage = ({ to, role }) => ({
 });
 
 export const emailChangeCodeMessage = ({ to, code }) => ({
-  to,
+  to, essential: true,
   subject: `Your code to confirm this email address is ${code}`,
   text: `Someone signed in to a Digifrenda account asked to use this email address.\n\nTo confirm, enter this code on the page where you asked: ${code}\n\nIt works once and expires in 15 minutes. If this wasn't you, ignore this email and nothing will change.${signoff}`,
 });

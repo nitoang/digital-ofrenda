@@ -13,6 +13,7 @@
 import * as store from './store.mjs';
 import { RULES } from './rules.mjs';
 import { DAY } from './util.mjs';
+import { suppressing } from './mailhealth.mjs';
 import { finishTakeover, altarName } from './team.mjs';
 import {
   queueMail, autoClaimNoticeMessage, autoClaimSuccessorMessage, claimReminderMessage,
@@ -100,6 +101,7 @@ async function remindRecipients(env, deps, now, h, appUrl) {
 
 export async function runScheduled(env, deps) {
   if (!env.DB || !deps.mailer) { console.error('scheduled job skipped: DB or MAILER is not configured'); return; }
+  deps = { ...deps, mailer: suppressing(deps.mailer, env.DB) };
   const now = deps.now();
   await startNotices(env, deps, now);
   const claims = await store.runningClaims(env.DB, RULES.jobBatch);

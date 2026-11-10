@@ -10,6 +10,7 @@
 //   TURNSTILE_SECRET        Cloudflare Turnstile secret; sign-in refuses requests without a valid token.
 //                           Set TURNSTILE_DISABLED="1" instead ONLY for local development.
 //   STRIPE_WEBHOOK_SECRET   whsec_... from Stripe
+//   RESEND_WEBHOOK_SECRET   whsec_... from Resend's webhook page (bounces and complaints; see mailhealth.mjs)
 //   STRIPE_SECRET_KEY       sk_... from Stripe; STRIPE_PRICE_EXTRA_PHOTOS, STRIPE_PRICE_SEVEN_TIERS and
 //                           STRIPE_PRICE_PLATINUM are the ids (price_...) of one-time Prices you create in Stripe
 //
@@ -40,6 +41,7 @@
 //   POST /ofrendas/:id/claim | DELETE /ofrendas/:id/claim | POST /ofrendas/:id/claim/complete
 //   POST /checkout {feature, altarId?}                     -> {url}  start a purchase (see checkout.mjs)
 //   POST /stripe/webhook                                   unlocks upgrades after payment (see billing.mjs)
+//   POST /resend/webhook                                   bounces and spam complaints from the email provider (see mailhealth.mjs)
 //
 // Rate limiting by IP belongs at the edge: add Cloudflare rate-limiting rules for POST /auth/start,
 // /auth/code, /auth/redeem and /checkout. What is limited here is per email address and per code.
@@ -53,6 +55,7 @@ import * as handover from './handover.mjs';
 import { runScheduled } from './scheduled.mjs';
 import * as account from './account.mjs';
 import { handleExport } from './export.mjs';
+import { handleResendWebhook, suppressing } from './mailhealth.mjs';
 import { handleStripe } from './billing.mjs';
 import { handleCheckout } from './checkout.mjs';
 
@@ -113,6 +116,7 @@ async function route(request, env, deps) {
   const method = request.method;
 
   if (pathname === '/stripe/webhook' && method === 'POST') return env.DB ? handleStripe(request, env, deps) : misconfigured('DB');
+  if (pathname === '/resend/webhook' && method === 'POST') return handleResendWebhook(request, env, deps);
 
   if (method === 'GET' && BY_NAME.test(pathname)) return env.DB ? altars.handleByName(env, BY_NAME.exec(pathname)[1]) : misconfigured('DB');
 
@@ -140,6 +144,7 @@ async function route(request, env, deps) {
 
 export const createHandler = (deps = {}) => async (request, env) => {
   const d = { now: Date.now, fetch: globalThis.fetch.bind(globalThis), defer: p => p, mailer: mailerFromEnv(env), ...deps };
+  d.mailer = suppressing(d.mailer, env.DB); // addresses that bounced or complained are skipped
   let res;
   try {
     res = await route(request, env, d);

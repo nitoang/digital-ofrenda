@@ -1,6 +1,7 @@
 import { api, getMe, describe } from './api.js';
 import { h, mount, frame, messages, safePath, busy } from './ui.js';
 import { turnstile } from './turnstile.js';
+import { suggest } from './typos.js';
 
 const root = document.getElementById('app');
 const next = safePath(new URLSearchParams(location.search).get('next'));
@@ -33,13 +34,27 @@ function showEmail(prefill = '') {
     h('legend', {}, 'How would you like to sign in?'),
     choice('link', 'Email me a link', 'one tap in the email signs you in.', true),
     choice('code', 'Email me a 6-digit code', 'you type it in here. Handy if you read email on another device.', false));
+  const hint = h('div', { class: 'msg', role: 'alert' });
+  let typedAnyway = null; // the exact address they said is right, so we do not ask twice
   const form = h('form', { novalidate: true },
-    h('label', { for: 'email' }, 'Your email address'), email, how, ts.el, h('p', {}, submit), msg.el);
+    h('label', { for: 'email' }, 'Your email address'), email, hint, how, ts.el, h('p', {}, submit), msg.el);
+  // Likely typo (gmial.com): ask once, with a one-tap fix, before sending anything.
+  function askAboutTypo(typed, better) {
+    const fix = h('button', { type: 'button', class: 'primary' }, 'Use ' + better);
+    const keep = h('button', { type: 'button' }, 'No, send to what I typed');
+    fix.addEventListener('click', () => { email.value = better; hint.replaceChildren(); email.focus(); });
+    keep.addEventListener('click', () => { typedAnyway = typed; hint.replaceChildren(); form.requestSubmit(submit); });
+    hint.replaceChildren(h('p', {}, 'Did you mean ', h('strong', {}, better), '?'), h('p', {}, fix, ' ', keep));
+    fix.focus();
+  }
+  email.addEventListener('input', () => hint.replaceChildren());
   form.addEventListener('submit', ev => {
     ev.preventDefault();
     busy(submit, async () => {
       msg.clear();
       if (!email.value.includes('@')) { msg.fail('Enter your email address.'); email.focus(); return; }
+      const typed = email.value.trim(), better = suggest(typed);
+      if (better && typedAnyway !== typed) { askAboutTypo(typed, better); return; }
       try {
         const method = form.querySelector('input[name="method"]:checked').value;
         const { challenge } = await api('POST', '/auth/start', { email: email.value, method, turnstile: ts.token() });
@@ -64,7 +79,7 @@ function showSent(address) {
   again.addEventListener('click', () => showEmail(address));
   mount(root, frame(null, h('h1', {}, 'Check your email'),
     h('p', { id: 'sent', tabindex: '-1' }, 'We sent a sign-in link to ', h('strong', {}, address), '. It works once and expires in 15 minutes.'),
-    h('p', { class: 'muted' }, 'Nothing arrived? Check your spam folder. You can ask for up to 5 an hour.'),
+    h('p', { class: 'muted' }, 'Nothing arrived? Check the address above for typos, then your spam folder, and give it a minute or two. You can ask for up to 5 an hour.'),
     h('p', {}, again)));
   document.getElementById('sent').focus();
 }
@@ -77,7 +92,7 @@ function showCode(address, challenge) {
   const form = h('form', { novalidate: true },
     h('p', { id: 'sent', tabindex: '-1' }, 'We sent a 6-digit code to ', h('strong', {}, address), '. It works once and expires in 15 minutes.'),
     h('label', { for: 'code' }, 'Code'), code, h('p', {}, submit, ' ', again), msg.el,
-    h('p', { class: 'muted' }, 'Nothing arrived? Check your spam folder. You can ask for up to 5 an hour.'));
+    h('p', { class: 'muted' }, 'Nothing arrived? Check the address above for typos, then your spam folder, and give it a minute or two. You can ask for up to 5 an hour.'));
   form.addEventListener('submit', ev => {
     ev.preventDefault();
     busy(submit, async () => {
