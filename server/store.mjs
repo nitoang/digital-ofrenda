@@ -323,3 +323,21 @@ export async function countHandoversTo(db, email, now) {
   const r = await one(db, 'SELECT COUNT(*) AS n FROM handovers WHERE to_email = ? AND expires_at > ?', email, now);
   return Number(r.n);
 }
+
+// ---------- visits ----------
+// Counts today for this person, once. False if today was already counted or they are an owner / the ofrenda is gone.
+export async function recordVisit(db, { altarId, userId, day }) {
+  const r = await run(db, `INSERT INTO altar_visits (altar_id, user_id, last_day)
+    SELECT m.id, ?, ? FROM altars m WHERE m.id = ? AND NOT EXISTS (SELECT 1 FROM altar_members o WHERE o.altar_id = m.id AND o.user_id = ? AND o.role = 'owner')
+    ON CONFLICT (altar_id, user_id) DO UPDATE SET days = days + 1, last_day = excluded.last_day WHERE altar_visits.last_day < excluded.last_day`,
+    userId, day, altarId, userId);
+  return r.meta.changes > 0;
+}
+// The signed-in people who opened it on the most days, ties included (never an owner). Empty if nobody has.
+export async function topVisitors(db, altarId) {
+  return all(db, `SELECT v.user_id, u.email, v.days FROM altar_visits v JOIN users u ON u.id = v.user_id
+    WHERE v.altar_id = ? AND v.days = (SELECT MAX(days) FROM altar_visits x WHERE x.altar_id = v.altar_id AND NOT EXISTS
+      (SELECT 1 FROM altar_members o WHERE o.altar_id = x.altar_id AND o.user_id = x.user_id AND o.role = 'owner'))
+    AND NOT EXISTS (SELECT 1 FROM altar_members o WHERE o.altar_id = v.altar_id AND o.user_id = v.user_id AND o.role = 'owner')
+    ORDER BY u.email`, altarId);
+}

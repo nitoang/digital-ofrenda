@@ -1585,3 +1585,26 @@ test('handover: an account can start only a few a day', async () => {
   t.tick(DAY + 1000);
   assert.equal((await giver.call('GET', '/me')).status, 200);
 });
+
+// ---------- visit counting ----------
+test('visits: counted once a day for signed-in people who are not owners, and nobody else', async () => {
+  const t = await setup();
+  const owner = await t.signIn('owner@example.com'), fan = await t.signIn('fan@example.com'), other = await t.signIn('other@example.com');
+  const id = await t.altarFor(owner, altar(frame('a', png())));
+  const visit = c => (c ? c.call('POST', `/ofrendas/${id}/visit`) : t.call('POST', `/ofrendas/${id}/visit`));
+  const days = c => t.db.prepare('SELECT days FROM altar_visits WHERE altar_id = ? AND user_id = ?').get(id, c.id)?.days;
+  for (const c of [owner, fan, fan, undefined]) assert.equal((await visit(c)).status, 204);
+  assert.equal(days(fan), 1, 'twice in a day is one');
+  assert.equal(days(owner), undefined, 'owners are not counted');
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM altar_visits').get().n, 1, 'nobody signed out is recorded');
+  await t.advance(DAY, [owner, fan, other]);
+  await visit(fan); await visit(other);
+  assert.equal(days(fan), 2);
+  assert.deepEqual((await t.store.topVisitors(t.env.DB, id)).map(v => [v.email, v.days]), [['fan@example.com', 2]]);
+  await t.advance(DAY, [owner, fan, other]);
+  await visit(other);
+  assert.deepEqual((await t.store.topVisitors(t.env.DB, id)).map(v => v.email), ['fan@example.com', 'other@example.com'], 'a tie returns both');
+  assert.equal((await t.call('POST', '/ofrendas/nope/visit')).status, 204, 'says nothing about whether an ofrenda exists');
+  assert.equal((await owner.call('DELETE', `/ofrendas/${id}`)).status, 200);
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM altar_visits').get().n, 0, 'gone with the ofrenda');
+});

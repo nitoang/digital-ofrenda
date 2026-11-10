@@ -95,6 +95,8 @@ await save(r.state);                                      // store the cleaned s
 - Errors: `confirm_required`, `bad_email`, `handover_pending` and `already_owner` (409), `recipient_at_limit` (409: a free account that owns 3 ofrendas must upgrade first; for a new address, when it would already have that many waiting), `too_many_handovers` (429, `RULES.handoversPerDay` a day).
 - What happens when a new person never signs up (reminders, then passing it to its most frequent signed-in visitor) comes with the scheduled reminders.
 
+**Visit counting.** The ofrenda page tells the Worker when a signed-in person opens it: `POST /ofrendas/:id/visit` (always 204). It counts one day per person per ofrenda, never for owners and never for anyone signed out, and is stored in `altar_visits` (days opened, last day counted). It exists only so the scheduled job can choose who gets an ofrenda whose handover went to someone who never signed up (`store.topVisitors`, ties included). The privacy page says so; keep them in step.
+
 **A successor.** The owner can name one person per altar to take over if they can no longer look after it. Naming someone grants nothing: they must sign in and agree first. Agreeing makes them a co-keeper (they can edit, not delete); removing or replacing the successor takes that access away again. A takeover then needs all of this:
 1. The owner has not been seen for a year (`RULES.inactiveAfter`, 365 days).
 2. The successor asks. The owner is emailed and has 30 days (`RULES.claimWait`) to stop it; **signing in at any time cancels it**, and the successor is told.

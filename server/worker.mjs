@@ -24,6 +24,7 @@
 //   POST /ofrendas                                         create one (free accounts: RULES.freeAltars)
 //   GET  /ofrendas/:id                                     public view
 //   GET  /ofrendas/by-name/:name                           which ofrenda a vanity name points to -> {id, slug}
+//   POST /ofrendas/:id/visit                               a signed-in person opened it: counted once a day, never for owners (204)
 //   PUT  /ofrendas/:id/slug {slug}                         the owner picks a vanity name (/a/abuela-rosa)
 //   PUT  /ofrendas/:id | DELETE /ofrendas/:id              save (limits enforced) | delete (owner)
 //   GET  /ofrendas/:id/team                                members; the owner also sees invites, successor, claim
@@ -68,6 +69,7 @@ const ROUTES = [
   ['POST', /^\/me\/email\/confirm$/, account.handleConfirmEmailChange],
   ['POST', /^\/checkout$/, handleCheckout],
   ['POST', /^\/ofrendas$/, altars.handleCreate],
+  ['POST', new RegExp(`^/ofrendas/${ID}/visit$`), altars.handleVisit],
   ['PUT', new RegExp(`^/ofrendas/${ID}$`), altars.handleSave],
   ['DELETE', new RegExp(`^/ofrendas/${ID}$`), altars.handleDelete],
   ['PUT', new RegExp(`^/ofrendas/${ID}/slug$`), altars.handleSetSlug],
