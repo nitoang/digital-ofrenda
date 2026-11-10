@@ -45,6 +45,7 @@ export async function handleTeam(request, env, deps, id) {
     entitlements,
     slug,
     invites: (await store.listInvites(env.DB, id, now)).map(i => ({ id: i.id, email: i.email, expiresAt: i.expires_at })),
+    locked: await store.ownerLocked(env.DB, id, s.user.id, RULES.freeAltars),
     handover: handover ? { email: handover.to_email, expiresAt: handover.expires_at } : null,
     successor: successor ? { email: successor.email, accepted: !!successor.accepted_user_id, waitMonths: monthsFor(successor.inactive_ms), auto: !!successor.auto_transfer } : null,
     claim: claim && !claim.cancelled_at && !claim.completed_at ? { requestedAt: claim.requested_at, executesAt: claim.executes_at, auto: !!claim.auto } : null,
@@ -86,6 +87,10 @@ export async function handleInvite(request, env, deps, id) {
 
 // "View and edit": make the person a co-keeper (once they sign in with this address and accept).
 async function sendInvite(env, deps, id, s, email, note) {
+  // A locked owner can still share the ofrenda to view, but cannot bring in anyone who could edit it.
+  if (await store.ownerLocked(env.DB, id, s.user.id, RULES.freeAltars)) {
+    return json({ error: 'ofrenda_locked', message: 'This ofrenda is locked until you upgrade, so you can share it to view but not invite anyone to edit it.', upgrade: 'platinum' }, 402);
+  }
   const now = deps.now();
   const members = await store.listMembers(env.DB, id);
   const pending = await store.listInvites(env.DB, id, now);

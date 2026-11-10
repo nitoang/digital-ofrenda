@@ -1795,3 +1795,22 @@ test('daily job: an ofrenda locked for its new owner is still handed over, just 
   assert.equal((await w.fan1.json('PUT', `/ofrendas/${w.id}`, altar(frame('a')))).body.error, 'ofrenda_locked');
   assert.equal((await subjects(t, w.fan1.email, /waiting for an upgrade/)).length, 1);
 });
+
+test('a locked owner can still share to view, but cannot invite anyone to edit', async () => {
+  const t = await setup();
+  const giver = await t.signIn('giver@example.com'), full = await t.signIn('full@example.com');
+  const gift = await t.altarFor(giver);
+  await giver.call('POST', `/ofrendas/${gift}/invites`, { email: full.email });
+  await full.call('POST', '/invites/accept', { token: await t.tokenFrom(full.email, /#i=([\w-]{43})/) });
+  t.tick(1000);
+  for (let i = 0; i < t.RULES.freeAltars; i++) { await t.altarFor(full); t.tick(1000); }
+  await giver.call('DELETE', `/ofrendas/${gift}`);
+  assert.equal((await full.json('GET', `/ofrendas/${gift}/team`)).body.locked, true);
+  const edit = await full.json('POST', `/ofrendas/${gift}/share`, { email: 'kim@example.com', access: 'edit' });
+  assert.deepEqual([edit.status, edit.body.error], [402, 'ofrenda_locked']);
+  assert.equal((await full.json('POST', `/ofrendas/${gift}/invites`, { email: 'kim@example.com' })).body.error, 'ofrenda_locked');
+  assert.equal((await full.call('POST', `/ofrendas/${gift}/share`, { email: 'kim@example.com', access: 'view' })).status, 201);
+  assert.equal((await t.mailTo('kim@example.com')).filter(m => /invited you/.test(m.subject)).length, 0);
+  t.db.prepare("UPDATE users SET plan = 'platinum' WHERE id = ?").run(full.id);
+  assert.equal((await full.call('POST', `/ofrendas/${gift}/share`, { email: 'kim@example.com', access: 'edit' })).status, 201, 'unlocked once upgraded');
+});

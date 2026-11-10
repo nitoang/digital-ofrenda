@@ -119,13 +119,13 @@ function deleteNote(team) {
 function ownerSections(team, msg, run) {
   // Sharing: the owner picks what the person can do. View only is the default, the safer choice.
   const email = h('input', { id: 'invite-email', type: 'email', autocomplete: 'off', required: true });
-  const choice = (value, label, hint, checked) => h('label', { class: 'check' },
-    h('input', { type: 'radio', name: 'access', value, checked }),
+  const choice = (value, label, hint, checked, disabled = false) => h('label', { class: 'check' },
+    h('input', { type: 'radio', name: 'access', value, checked, disabled }),
     h('span', {}, h('strong', {}, label), h('span', { class: 'muted' }, ' — ' + hint)));
   const access = h('fieldset', { class: 'choices' },
     h('legend', {}, 'What can they do?'),
     choice('view', 'View only', 'we email them the link, and they can look but not change anything.', true),
-    choice('edit', 'View and edit', 'they are invited as a co-keeper, and can add to the ofrenda and change it.', false));
+    choice('edit', 'View and edit', team.locked ? 'not available while this ofrenda is locked. Upgrade to invite people to edit it.' : 'they are invited as a co-keeper, and can add to the ofrenda and change it.', false, team.locked));
   const note = h('textarea', { id: 'share-note', rows: 3, maxlength: 280, autocomplete: 'off' });
   const share = h('button', { type: 'submit', class: 'primary' }, 'Share');
   const shareForm = h('form', { novalidate: true, class: 'share-form' },
