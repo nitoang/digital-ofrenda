@@ -696,7 +696,7 @@ test('takeover: after a long silence the successor asks, the owner is told, and 
   assert.equal(members.body.successor, null);
   assert.equal(members.body.claim, null);
   assert.equal((await t.mailTo('owner@example.com')).at(-1).subject, 'An ofrenda you kept has a new owner');
-  assert.equal((await t.mailTo('heir@example.com')).at(-1).subject, 'You now keep an ofrenda');
+  assert.equal((await t.mailTo('heir@example.com')).at(-1).subject, 'You now own an ofrenda');
   assert.equal((await heir.call('PUT', `/ofrendas/${id}`, altar(frame('z', png())))).status, 200);
   const old = await t.signIn('owner@example.com');
   assert.equal((await old.call('PUT', `/ofrendas/${id}`, altar())).status, 200, 'the old owner stays on as a co-keeper');
