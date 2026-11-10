@@ -6,14 +6,16 @@
 // cannot quietly move an account away from its owner.
 //
 // Deleting: DELETE /me {email, deleteOfrendas?}. The email must be typed back as a check against a stray
-// click. If you own ofrendas, you must say what happens to them: deleteOfrendas=true deletes them (their
-// co-keepers lose them too), and without it the request is refused with the counts so the page can ask.
+// click. Ofrendas that other people keep are passed on to them (see owners.mjs). If you own ones nobody else
+// keeps, you must say so: deleteOfrendas=true deletes those, and without it the request is refused with the
+// counts so the page can ask.
 
 import { json, readJson, isResponse, normalizeEmail, sha256Hex, newCode, timingSafeEqual } from './util.mjs';
 import * as store from './store.mjs';
 import { requireUser } from './auth.mjs';
 import { queueMail, emailChangeCodeMessage, emailChangedNoticeMessage } from './mail.mjs';
 import { RULES } from './rules.mjs';
+import { retireOwner } from './owners.mjs';
 
 const clearCookie = '__Host-session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0';
 const codeHash = (userId, email, code) => sha256Hex(`${userId}:${email}:${code}`);
@@ -68,11 +70,15 @@ export async function handleDeleteAccount(request, env, deps) {
   if (isResponse(body)) return body;
   if (normalizeEmail(body.email) !== s.user.email) return json({ error: 'email_mismatch', message: 'Type your email address exactly to confirm.' }, 400);
 
-  const { owned, withOthers } = await store.ownedAltarSummary(env.DB, s.user.id);
-  if (owned > 0 && body.deleteOfrendas !== true) {
-    return json({ error: 'owns_ofrendas', owned, sharedWith: withOthers,
-      message: 'You own ofrendas. Deleting your account deletes them too, and anyone who helps keep them loses them.' }, 409);
+  // Ofrendas other people keep are passed on to them, never erased. Only the ones nobody else keeps are deleted,
+  // and the person has to say so.
+  const owned = await store.ownedAltars(env.DB, s.user.id);
+  const erased = owned.filter(a => a.others === 0).length;
+  if (erased > 0 && body.deleteOfrendas !== true) {
+    return json({ error: 'owns_ofrendas', owned: erased, handedOn: owned.length - erased,
+      message: 'You own ofrendas that nobody else keeps. Deleting your account deletes them. Ofrendas other people keep are passed on to them instead.' }, 409);
   }
-  await store.deleteAccount(env.DB, { userId: s.user.id, email: s.user.email, withOfrendas: owned > 0 });
+  for (const a of owned) await retireOwner(env, deps, a.id, s.user);
+  await store.deleteAccount(env.DB, { userId: s.user.id, email: s.user.email });
   return json({ ok: true }, 200, { 'set-cookie': clearCookie });
 }

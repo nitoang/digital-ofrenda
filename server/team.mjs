@@ -18,7 +18,7 @@ import { RULES } from './rules.mjs';
 import { FEATURES } from './validate.mjs';
 
 // Signed in, and one of `roles` on this altar; otherwise a Response to send back.
-async function asRole(request, env, deps, id, roles) {
+export async function asRole(request, env, deps, id, roles) {
   const s = await requireUser(request, env, deps);
   if (isResponse(s)) return s;
   const role = await store.getRole(env.DB, id, s.user.id);
@@ -38,12 +38,14 @@ export async function handleTeam(request, env, deps, id) {
   const now = deps.now();
   const successor = await store.getSuccessor(env.DB, id);
   const claim = await store.getClaim(env.DB, id);
+  const handover = await store.getHandover(env.DB, id);
   return json({
     role: 'owner',
     members,
     entitlements,
     slug,
     invites: (await store.listInvites(env.DB, id, now)).map(i => ({ id: i.id, email: i.email, expiresAt: i.expires_at })),
+    handover: handover ? { email: handover.to_email, expiresAt: handover.expires_at } : null,
     successor: successor ? { email: successor.email, accepted: !!successor.accepted_user_id } : null,
     claim: claim && !claim.cancelled_at && !claim.completed_at ? { requestedAt: claim.requested_at, executesAt: claim.executes_at } : null,
   });
@@ -63,7 +65,7 @@ export function cleanNote(v) {
 }
 
 // The loved one's name as the owner typed it into the altar, made safe for a subject line.
-async function altarName(env, id) {
+export async function altarName(env, id) {
   try {
     const row = await store.getAltar(env.DB, id);
     const name = row?.state ? JSON.parse(row.state).name : '';
@@ -153,8 +155,14 @@ export async function handleAcceptInvite(request, env, deps) {
 export async function handleRemoveMember(request, env, deps, id, userId) {
   const s = await asRole(request, env, deps, id, ['owner', 'keeper']);
   if (isResponse(s)) return s;
-  if (userId === s.user.id && s.role === 'owner') return json({ error: 'owner_cannot_leave', message: 'Hand the ofrenda to someone else or delete it.' }, 400);
   if (userId !== s.user.id && s.role !== 'owner') return json({ error: 'forbidden' }, 403);
+  if (userId !== s.user.id && (await store.getRole(env.DB, id, userId)) === 'owner') {
+    return json({ error: 'owners_cannot_remove_owners', message: 'Owners can’t remove each other. Each owner can only step away themselves.' }, 403);
+  }
+  if (userId === s.user.id && s.role === 'owner') {
+    return (await store.leaveAsOwner(env.DB, id, userId)) ? json({ ok: true })
+      : json({ error: 'owner_cannot_leave', message: 'You are the only owner. Hand the ofrenda to someone else or delete it.' }, 400);
+  }
   return (await store.removeMember(env.DB, id, userId)) ? json({ ok: true }) : json({ error: 'not_found' }, 404);
 }
 
@@ -210,14 +218,14 @@ async function asSuccessor(request, env, deps, id) {
 export async function handleClaim(request, env, deps, id) {
   const s = await asSuccessor(request, env, deps, id);
   if (isResponse(s)) return s;
-  const owner = await store.getOwner(env.DB, id);
-  if (!owner || owner.id === s.user.id) return json({ error: 'not_found' }, 404);
+  const owners = await store.getOwners(env.DB, id);
+  if (!owners.length || owners.some(o => o.id === s.user.id)) return json({ error: 'not_found' }, 404);
   const now = deps.now();
-  const eligibleAt = owner.last_seen_at + RULES.inactiveAfter;
+  const eligibleAt = Math.max(...owners.map(o => o.last_seen_at)) + RULES.inactiveAfter; // every owner must have gone quiet
   if (now < eligibleAt) return json({ error: 'owner_active', eligibleAt }, 403);
   const executesAt = now + RULES.claimWait;
   if (!(await store.createClaim(env.DB, { altarId: id, requestedBy: s.user.id, now, executesAt }))) return json({ error: 'claim_in_progress' }, 409);
-  queueMail(deps, () => deps.mailer.send(claimNoticeMessage({ to: owner.email, from: s.user.email, executesAt })));
+  for (const o of owners) queueMail(deps, () => deps.mailer.send(claimNoticeMessage({ to: o.email, from: s.user.email, executesAt })));
   return json({ executesAt }, 201);
 }
 
@@ -241,23 +249,23 @@ export async function handleCompleteClaim(request, env, deps, id) {
   const s = await asSuccessor(request, env, deps, id);
   if (isResponse(s)) return s;
   const claim = await store.getClaim(env.DB, id);
-  const owner = await store.getOwner(env.DB, id);
-  if (!claim || claim.cancelled_at || claim.completed_at || !owner) return json({ error: 'no_claim' }, 409);
+  const owners = await store.getOwners(env.DB, id);
+  if (!claim || claim.cancelled_at || claim.completed_at || !owners.length) return json({ error: 'no_claim' }, 409);
   const now = deps.now();
   if (claim.requested_by !== s.user.id) return json({ error: 'forbidden' }, 403);
   if (now < claim.executes_at) return json({ error: 'too_early', executesAt: claim.executes_at }, 403);
-  if (owner.last_seen_at > claim.requested_at) { // belt and braces: activity normally cancels the claim already
+  if (owners.some(o => o.last_seen_at > claim.requested_at)) { // belt and braces: activity normally cancels the claim already
     await store.cancelClaim(env.DB, id, now);
     return json({ error: 'owner_active' }, 409);
   }
   if (!(await store.finishClaim(env.DB, { altarId: id, now }))) return json({ error: 'no_claim' }, 409);
   try {
-    await store.handOver(env.DB, { altarId: id, oldOwnerId: owner.id, newOwnerId: s.user.id, now, grants: owner.plan === 'platinum' ? FEATURES : [] });
+    await store.handOver(env.DB, { altarId: id, newOwnerId: s.user.id, now, grants: owners.some(o => o.plan === 'platinum') ? FEATURES : [] });
   } catch (e) {
     await store.reopenClaim(env.DB, id);
     throw e;
   }
-  queueMail(deps, () => deps.mailer.send(handoverMessage({ to: owner.email, role: 'keeper' })));
+  for (const o of owners) queueMail(deps, () => deps.mailer.send(handoverMessage({ to: o.email, role: 'keeper' })));
   queueMail(deps, () => deps.mailer.send(handoverMessage({ to: s.user.email, role: 'owner' })));
   return json({ ok: true, role: 'owner' });
 }

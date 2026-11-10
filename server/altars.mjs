@@ -1,11 +1,12 @@
 // Creating, reading, saving and deleting altars. Saving applies validateOfrenda with entitlements read from
 // OUR database (per-altar upgrades, or the owner's platinum plan), never from the request.
 
-import { json, readBody, readJson, newId, isResponse, normalizeSlug } from './util.mjs';
+import { json, readBody, readJson, newId, isResponse, normalizeSlug, DAY } from './util.mjs';
 import { validateOfrenda, FEATURES } from './validate.mjs';
 import * as store from './store.mjs';
-import { requireUser } from './auth.mjs';
+import { requireUser, sessionFrom } from './auth.mjs';
 import { RULES } from './rules.mjs';
+import { retireOwner } from './owners.mjs';
 
 export const MAX_BODY_BYTES = 2_500_000;
 
@@ -35,6 +36,9 @@ export async function handleSave(request, env, deps, id) {
   const s = await requireUser(request, env, deps);
   if (isResponse(s)) return s;
   if (!(await store.getRole(env.DB, id, s.user.id))) return json({ error: 'forbidden' }, 403);
+  if (await store.altarLockedFor(env.DB, id, s.user.id, RULES.freeAltars)) {
+    return json({ error: 'ofrenda_locked', message: `Free accounts can own ${RULES.freeAltars} ofrendas, so this one can be viewed but not changed until you upgrade.`, upgrade: 'platinum' }, 402);
+  }
 
   const body = await readBody(request, MAX_BODY_BYTES);
   if (body === null) return json({ error: 'too_large' }, 413);
@@ -56,8 +60,7 @@ export async function handleDelete(request, env, deps, id) {
   const s = await requireUser(request, env, deps);
   if (isResponse(s)) return s;
   if ((await store.getRole(env.DB, id, s.user.id)) !== 'owner') return json({ error: 'forbidden' }, 403);
-  await store.deleteAltar(env.DB, id);
-  return json({ ok: true });
+  return json({ ok: true, outcome: await retireOwner(env, deps, id, s.user) });
 }
 
 // Public: which ofrenda does this vanity name point to? Anyone with the name can already view it, so this says nothing new.
@@ -91,5 +94,16 @@ export async function handleMe(request, env, deps) {
     id: r.id,
     claim: r.executes_at && !r.cancelled_at && !r.completed_at ? { executesAt: r.executes_at } : null,
   }));
-  return json({ user: { id: s.user.id, email: s.user.email, plan: s.user.plan ?? null }, altars: await store.altarsForUser(env.DB, s.user.id), successorOf });
+  const rows = await store.altarsForUser(env.DB, s.user.id);
+  let owned = 0; // rows are oldest first, so the ones past the free limit are the locked ones
+  const altars = rows.map(r => r.role === 'owner' ? { ...r, locked: s.user.plan !== 'platinum' && ++owned > RULES.freeAltars } : r);
+  return json({ user: { id: s.user.id, email: s.user.email, plan: s.user.plan ?? null }, altars, successorOf });
+}
+
+// The ofrenda page tells us a signed-in person opened it. Counted once a day per person, never for owners, and
+// nothing at all for people who are not signed in. Always answers 204, so it says nothing about the ofrenda.
+export async function handleVisit(request, env, deps, id) {
+  const s = await sessionFrom(request, env, deps);
+  if (s) await store.recordVisit(env.DB, { altarId: id, userId: s.user.id, day: Math.floor(deps.now() / DAY) });
+  return new Response(null, { status: 204 });
 }

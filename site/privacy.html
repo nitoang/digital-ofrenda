@@ -19,6 +19,8 @@
       <li><strong>When you were last active</strong> on the site. It is used for one thing: if you are the owner of an ofrenda and have been away for a very long time, someone you chose as a successor may ask to take it over, and you are told first. Signing in cancels the request.</li>
       <li><strong>Your ofrendas:</strong> the name, words, photos and arrangement you save. <em>Anyone who has the link to an ofrenda can see it</em>, so share links only with people you want to see it. If the owner gives an ofrenda a name in its address (like <em>/a/abuela-rosa</em>), it becomes easy to guess, and the original link keeps working too. The page shows what you saved, never who keeps it.</li>
       <li><strong>Who keeps what:</strong> which ofrendas you own or help keep, the email addresses of people you invited or named as a successor, and the invitations you sent. When you share an ofrenda for viewing only, we email the link once and keep just a one-way hash of that address for one day, to stop the same inbox being emailed over and over. The address itself is not stored.</li>
+      <li><strong>Visits to an ofrenda, when you are signed in.</strong> To decide who should look after an ofrenda if its owner hands it to someone who never signs up, we count how many days you opened it while signed in: one count per ofrenda per day, kept with your account. We never count visitors who are not signed in, and we do not record which pages you read or for how long. The count is used only for that decision, and is deleted with the ofrenda or your account.</li>
+      <li><strong>Handovers.</strong> If an owner hands an ofrenda to an email address that has no account yet, we keep that address with the waiting handover until the person signs in or the handover ends (at most 90 days), and remind them by email to sign up.</li>
       <li><strong>Sign-in records.</strong> The sign-in link or code you ask for, session identifiers and invitation links are stored only as one-way hashes, so we cannot read them back. Codes and links stop working after 15 minutes, and old ones are cleared out regularly.</li>
       <li><strong>Payment records.</strong> Which upgrade was bought and for what, with Stripe&rsquo;s payment reference. No name, email or card detail. We keep these as a record of the sale even if you delete your account.</li>
     </ul>
@@ -37,9 +39,9 @@
     <h2>Your choices</h2>
     <ul>
       <li><strong>Change your email address</strong> on the <a href="/my">My ofrendas</a> page. We send a code to the new address first.</li>
-      <li><strong>Delete your account</strong> on the same page. It removes your account, your sign-in records, your place on other people&rsquo;s ofrendas, and the invitations to or from you. If you own ofrendas you choose whether they are deleted with it. Deletion is immediate and cannot be undone.</li>
+      <li><strong>Delete your account</strong> on the same page. It removes your account, your sign-in records, your place on other people&rsquo;s ofrendas, and the invitations to or from you. Ofrendas that other people help keep are passed on to them instead of being erased, so what you made is not lost; ofrendas nobody else keeps are deleted, and you confirm that first. Deletion is immediate and cannot be undone.</li>
       <li><strong>Delete one ofrenda</strong> from its page, if you own it.</li>
-      <li><strong>Ask us</strong> for a copy of what we hold about you, or to correct it, at <span class="contact">[your contact email]</span>.</li>
+      <li><strong>Ask us</strong> for a copy of what we hold about you, or to correct it, at <a class="contact" href="mailto:support@digifrenda.duelokit.com">support@digifrenda.duelokit.com</a>.</li>
     </ul>
 
     <h2>Backups and security</h2>
@@ -50,7 +52,7 @@
 
     <h2>Changes</h2>
     <p>If this page changes in a way that matters, we will say so here and, if we can, by email.</p>
-    <p>Questions: <span class="contact">[your contact email]</span>. See also the <a href="/terms">terms</a>.</p>
+    <p>Questions: <a class="contact" href="mailto:support@digifrenda.duelokit.com">support@digifrenda.duelokit.com</a>. See also the <a href="/terms">terms</a>.</p>
   </main>
   <footer class="foot"><a href="/privacy">Privacy</a><a href="/terms">Terms</a></footer>
 </body>

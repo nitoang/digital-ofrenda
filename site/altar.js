@@ -42,6 +42,7 @@ function shareBox(url) {
     }
   }
 
+  if (me && !(membership && membership.role === 'owner')) api('POST', `/ofrendas/${id}/visit`).catch(() => {}); // counts the day; see the privacy page
   const msg = messages();
   const Ofrenda = customElements.get('digital-ofrenda');
   Ofrenda.features = { sevenTiers: entitlements.sevenTiers === true, extraPhotos: entitlements.extraPhotos === true };

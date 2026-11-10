@@ -105,3 +105,35 @@ export const emailChangedNoticeMessage = ({ to, newEmail }) => ({
   subject: 'The email address on your Digifrenda account was changed',
   text: `The email address on your account was changed to ${newEmail}, and every other device was signed out.\n\nIf that was you, there's nothing more to do. If it wasn't, someone else had access to your account, and this address no longer signs in to it.${signoff}`,
 });
+
+export const nowOwnerMessage = ({ to }) => ({
+  to,
+  subject: 'You now own an ofrenda',
+  text: `The person who owned an ofrenda you help keep has stepped away from it, so it has been passed to you. Nothing was deleted, and everything is just as they left it.\n\nYou can keep adding to it, choose who else helps, and decide what happens to it next. It counts as one of your ofrendas.${signoff}`,
+});
+
+export const lockedMessage = ({ to }) => ({
+  to,
+  subject: 'An ofrenda was passed to you, and it is waiting for an upgrade',
+  text: `The person who owned an ofrenda you help keep has stepped away from it, so it has been passed to you.\n\nFree accounts can own 3 ofrendas, and you are already at that number. So this one is locked for now. You and anyone you share it with can still view it, and it stays exactly as it is. It can't be changed until you upgrade to Platinum or make room by passing one of your other ofrendas on.\n\nIt will never be deleted because of this, and nothing is asked of you.${signoff}`,
+});
+
+// A handover to someone with no account yet. They sign in with this address and it is theirs.
+export const handoverOfferMessage = ({ to, from, link, name = '' }) => ({
+  to,
+  subject: `${from} wants to hand an ofrenda over to you`,
+  text: `${from} has chosen you to look after an ofrenda${forName(name)}, alongside them.\n\nTo accept, sign in with this email address. That's all it takes, and it will be waiting for you:\n${link}\n\nIf you don't sign up, we'll remind you a few times, and ${from} still has it in the meantime. ${whyYouGotThis(from)}${warmSign}`,
+});
+
+// A handover to someone who already has an account: it has happened.
+export const handoverReceivedMessage = ({ to, from, link, name = '' }) => ({
+  to,
+  subject: `${from} handed an ofrenda over to you`,
+  text: `${from} has handed you an ofrenda${forName(name)}. You are now an owner of it, alongside them. It counts as one of your ofrendas.\n\nOpen it:\n${link}${warmSign}`,
+});
+
+export const handoverAcceptedMessage = ({ to, who }) => ({
+  to,
+  subject: `${who} accepted your handover`,
+  text: `${who} signed in and is now an owner of the ofrenda you handed over. You are still an owner too.${signoff}`,
+});
