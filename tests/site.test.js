@@ -290,6 +290,84 @@ withSite('co-keepers: invite by email, accept in the browser, edit together, rem
   for (const c of [owner, sam, other]) await c.ctx.close();
 });
 
+withSite('successor: the owner chooses how long to wait and whether it passes automatically, and can change it later', async () => {
+  const owner = await visitor();
+  await signIn(owner.page, 'owner@example.com');
+  const id = await startOfrenda(owner.page);
+  await owner.page.goto(`${site.url}/a/${id}/keepers`);
+  await assertLabelled(owner.page);
+  assert.ok(await owner.page.getByLabel('12 months (recommended)').isChecked(), '12 months is the default');
+  assert.ok(await owner.page.getByLabel('Pass it to them automatically').isChecked(), 'automatic is the default');
+  await owner.page.getByLabel('Their email address').fill('heir@example.com');
+  await owner.page.getByLabel('6 months').check();
+  await owner.page.getByLabel('Pass it to them automatically').uncheck();
+  await owner.page.getByRole('button', { name: 'Name a successor' }).click();
+  await owner.page.getByText('We emailed them to ask').waitFor();
+  await owner.page.getByText('If you are away 6 months, you are emailed, and 30 days later they can ask to take it over').waitFor();
+  assert.deepEqual({ ...site.db.prepare('SELECT inactive_ms, auto_transfer FROM successors WHERE altar_id = ?').get(id) }, { inactive_ms: site.RULES.successorWaits[6], auto_transfer: 0 });
+  await site.mail('owner@example.com', /named a successor/);
+
+  const change = owner.page.locator('details');
+  await change.locator('summary').click();
+  await assertLabelled(owner.page);
+  await change.getByLabel('12 months (recommended)').check();
+  await change.getByLabel('Pass it to them automatically').check();
+  await change.getByRole('button', { name: 'Save' }).click();
+  await owner.page.getByText('Saved. Your successor was not emailed again.').waitFor();
+  await owner.page.getByText('If you are away 12 months, you are emailed, and 30 days later it passes to them automatically').waitFor();
+  assert.deepEqual({ ...site.db.prepare('SELECT inactive_ms, auto_transfer FROM successors WHERE altar_id = ?').get(id) }, { inactive_ms: site.RULES.successorWaits[12], auto_transfer: 1 });
+  assert.equal(site.sent.filter(m => m.to === 'heir@example.com').length, 1, 'changing the settings does not email them again');
+  await owner.ctx.close();
+});
+
+withSite('handover: a typed confirmation, an existing account gets it at once, a new person after they sign in, and it can be cancelled', async () => {
+  const owner = await visitor(), friend = await visitor();
+  await signIn(friend.page, 'friend@example.com');
+  await signIn(owner.page, 'owner@example.com');
+  const id = await startOfrenda(owner.page);
+  await owner.page.goto(`${site.url}/a/${id}/keepers`);
+  await assertLabelled(owner.page);
+  const who = owner.page.getByLabel('Email address of the person to hand it to');
+  const word = owner.page.getByLabel('To confirm, type the word handover');
+  await owner.page.getByText('This is a big step.').waitFor();
+
+  await who.fill('friend@example.com');
+  await word.fill('hand');
+  await owner.page.getByRole('button', { name: 'Hand this ofrenda over' }).click();
+  await owner.page.getByRole('alert').filter({ hasText: 'Type the word handover' }).waitFor();
+  assert.equal(site.db.prepare("SELECT COUNT(*) n FROM altar_members WHERE altar_id = ? AND role = 'owner'").get(id).n, 1, 'nothing happened');
+
+  await word.fill('handover');
+  await owner.page.getByRole('button', { name: 'Hand this ofrenda over' }).click();
+  await owner.page.getByText('Handed over. They have been emailed.').waitFor();
+  assert.equal(site.db.prepare("SELECT COUNT(*) n FROM altar_members WHERE altar_id = ? AND role = 'owner'").get(id).n, 2, 'both are owners now');
+  await site.mail('friend@example.com', /handed an ofrenda over to you/);
+  await owner.page.getByRole('button', { name: 'Stop being an owner of this ofrenda' }).waitFor(); // with two owners, you can step away
+
+  // A person with no account yet: it waits, and can be cancelled.
+  await who.fill('newcomer@example.com');
+  await word.fill('handover');
+  await owner.page.getByRole('button', { name: 'Hand this ofrenda over' }).click();
+  await owner.page.getByText('newcomer@example.com has not signed in yet.').waitFor();
+  assert.equal(site.db.prepare('SELECT COUNT(*) n FROM handovers').get().n, 1);
+  await owner.page.getByRole('button', { name: 'Cancel the handover' }).click();
+  await owner.page.getByRole('button', { name: 'Click again to cancel' }).click();
+  await owner.page.getByText('Handover cancelled.').waitFor();
+  assert.equal(site.db.prepare('SELECT COUNT(*) n FROM handovers').get().n, 0);
+
+  // Waiting again, then they sign in for the first time.
+  await who.fill('newcomer@example.com');
+  await word.fill('handover');
+  await owner.page.getByRole('button', { name: 'Hand this ofrenda over' }).click();
+  await owner.page.getByText('newcomer@example.com has not signed in yet.').waitFor();
+  const newcomer = await visitor();
+  await signIn(newcomer.page, 'newcomer@example.com');
+  assert.equal(site.db.prepare("SELECT COUNT(*) n FROM altar_members m JOIN users u ON u.id = m.user_id WHERE m.altar_id = ? AND m.role = 'owner' AND u.email = 'newcomer@example.com'").get(id).n, 1);
+  await owner.page.reload();
+  assert.equal(await owner.page.getByText('has not signed in yet').count(), 0);
+  for (const c of [owner, friend, newcomer]) await c.ctx.close();
+});
+
 withSite('successor: agree, wait out the silence, ask, wait out the notice, take over', async () => {
   const owner = await visitor();
   await signIn(owner.page, 'owner@example.com');

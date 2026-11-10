@@ -47,7 +47,7 @@ export async function handleTeam(request, env, deps, id) {
     invites: (await store.listInvites(env.DB, id, now)).map(i => ({ id: i.id, email: i.email, expiresAt: i.expires_at })),
     handover: handover ? { email: handover.to_email, expiresAt: handover.expires_at } : null,
     successor: successor ? { email: successor.email, accepted: !!successor.accepted_user_id, waitMonths: monthsFor(successor.inactive_ms), auto: !!successor.auto_transfer } : null,
-    claim: claim && !claim.cancelled_at && !claim.completed_at ? { requestedAt: claim.requested_at, executesAt: claim.executes_at } : null,
+    claim: claim && !claim.cancelled_at && !claim.completed_at ? { requestedAt: claim.requested_at, executesAt: claim.executes_at, auto: !!claim.auto } : null,
   });
 }
 

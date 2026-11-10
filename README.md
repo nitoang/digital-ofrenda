@@ -150,7 +150,7 @@ Not built: Stripe automatic tax (a decision, not code). Email addresses are stor
 | `/signin` | Email and a choice of link or 6-digit code. Handles the emailed link (a button press, so mail scanners can't use it up). |
 | `/my` | Your ofrendas, starting a new one, the ofrendas you agreed to look after (ask to take over, complete the handover), sign out. |
 | `/a/<id>` | The altar. Keepers get the editor, everyone else a read-only view that refreshes every 15 seconds. Has a copy-link box. |
-| `/a/<id>/keepers` | Owner: invite co-keepers, name or remove a successor, stop a takeover request, delete. Co-keepers: leave. |
+| `/a/<id>/keepers` | Owner: share, name a successor (choose 12 or 6 months, and whether it passes automatically; change that later without re-asking them), hand the ofrenda to someone (typed confirmation; shows a waiting handover with a cancel), step away when there are other owners, stop a takeover notice, delete. Co-keepers: leave. |
 | `/invite`, `/successor` | Where the emailed invitation and successor-request links land. |
 
 How it behaves:

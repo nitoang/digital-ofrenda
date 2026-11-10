@@ -19,6 +19,7 @@ main { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
 main.wide { max-width: 980px; }
 .lead { font-size: 1.1rem; color: var(--muted); margin-top: 0; }
 .muted { color: var(--muted); }
+.card.warn { border-color: var(--bad); border-width: 2px; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 12px 0; }
 
 label { display: block; font-weight: 600; margin: 12px 0 4px; }
