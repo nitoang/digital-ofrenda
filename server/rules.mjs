@@ -24,5 +24,9 @@ export const RULES = Object.freeze({
   handoverWait: 90 * DAY,              // how long a handover to someone without an account waits for them to sign up
   handoversPerDay: 3,                  // handovers one account may start in a day
   handoverWord: 'handover',            // typed to confirm a handover
+  successorWaits: Object.freeze({ 6: 183 * DAY, 12: 365 * DAY }), // months the owner may choose before a takeover can start
+  claimReminders: [15 * DAY, 27 * DAY],            // reminders to the owner during the 30-day notice (the notice itself is day 0)
+  handoverReminders: [30 * DAY, 60 * DAY, 85 * DAY], // reminders to a person who has not signed up for a waiting handover
+  jobBatch: 100,                       // rows each step of the daily job handles per run
   claimWait: 30 * DAY,                 // notice period; the owner signing in at any point cancels it
 });

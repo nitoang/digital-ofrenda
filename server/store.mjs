@@ -248,10 +248,15 @@ export async function acceptInvite(db, { tokenHash, userId, email, now }) {
 
 // ---------- successor and handover ----------
 // Naming a new successor replaces the old one and starts again from "not yet accepted".
-export const setSuccessor = (db, { altarId, email, tokenHash, designatedBy, now }) =>
-  run(db, 'INSERT OR REPLACE INTO successors (altar_id, email, token_hash, designated_by, designated_at) VALUES (?, ?, ?, ?, ?)', altarId, email, tokenHash, designatedBy, now);
+export const setSuccessor = (db, { altarId, email, tokenHash, designatedBy, now, inactiveMs = 365 * 86_400_000, auto = true }) =>
+  run(db, 'INSERT OR REPLACE INTO successors (altar_id, email, token_hash, designated_by, designated_at, inactive_ms, auto_transfer) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    altarId, email, tokenHash, designatedBy, now, inactiveMs, auto ? 1 : 0);
 export const getSuccessor = (db, altarId) =>
-  one(db, 'SELECT altar_id, email, designated_at, accepted_user_id, accepted_at FROM successors WHERE altar_id = ?', altarId);
+  one(db, 'SELECT altar_id, email, designated_at, accepted_user_id, accepted_at, inactive_ms, auto_transfer FROM successors WHERE altar_id = ?', altarId);
+// Changes how long, and whether it starts by itself, without asking the successor again.
+export async function updateSuccessorSettings(db, { altarId, inactiveMs, auto }) {
+  return (await run(db, 'UPDATE successors SET inactive_ms = ?, auto_transfer = ? WHERE altar_id = ?', inactiveMs, auto ? 1 : 0, altarId)).meta.changes > 0;
+}
 export const clearSuccessor = (db, altarId) => run(db, 'DELETE FROM successors WHERE altar_id = ?', altarId);
 export const acceptSuccessor = (db, { tokenHash, userId, email, now }) =>
   one(db, 'UPDATE successors SET accepted_user_id = ?, accepted_at = ? WHERE token_hash = ? AND email = ? AND accepted_user_id IS NULL RETURNING altar_id',
@@ -266,14 +271,14 @@ export const altarsWhereSuccessor = (db, userId) =>
   all(db, 'SELECT s.altar_id AS id, c.executes_at, c.cancelled_at, c.completed_at FROM successors s LEFT JOIN claims c ON c.altar_id = s.altar_id WHERE s.accepted_user_id = ?', userId);
 
 export const getClaim = (db, altarId) =>
-  one(db, 'SELECT altar_id, requested_by, requested_at, executes_at, cancelled_at, completed_at FROM claims WHERE altar_id = ?', altarId);
+  one(db, 'SELECT altar_id, requested_by, requested_at, executes_at, cancelled_at, completed_at, auto, reminders_sent FROM claims WHERE altar_id = ?', altarId);
 
 // Creates a claim unless one is already running (a finished or cancelled one is replaced).
-export async function createClaim(db, { altarId, requestedBy, now, executesAt }) {
-  const r = await run(db, `INSERT INTO claims (altar_id, requested_by, requested_at, executes_at) VALUES (?, ?, ?, ?)
+export async function createClaim(db, { altarId, requestedBy, now, executesAt, auto = false }) {
+  const r = await run(db, `INSERT INTO claims (altar_id, requested_by, requested_at, executes_at, auto) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT (altar_id) DO UPDATE SET requested_by = excluded.requested_by, requested_at = excluded.requested_at,
-      executes_at = excluded.executes_at, cancelled_at = NULL, completed_at = NULL
-    WHERE claims.cancelled_at IS NOT NULL OR claims.completed_at IS NOT NULL`, altarId, requestedBy, now, executesAt);
+      executes_at = excluded.executes_at, auto = excluded.auto, reminders_sent = 0, cancelled_at = NULL, completed_at = NULL
+    WHERE claims.cancelled_at IS NOT NULL OR claims.completed_at IS NOT NULL`, altarId, requestedBy, now, executesAt, auto ? 1 : 0);
   return r.meta.changes > 0;
 }
 export const cancelClaim = async (db, altarId, now) =>
@@ -341,3 +346,33 @@ export async function topVisitors(db, altarId) {
     AND NOT EXISTS (SELECT 1 FROM altar_members o WHERE o.altar_id = v.altar_id AND o.user_id = v.user_id AND o.role = 'owner')
     ORDER BY u.email`, altarId);
 }
+
+
+// ---------- the daily job ----------
+// Ofrendas whose agreed successor may now be given the 30-day notice by the job: automatic transfer is on, no notice
+// is running, and every owner has been away for the period chosen with the successor.
+export const dueAutoTakeovers = (db, { now, limit }) =>
+  all(db, `SELECT s.altar_id, s.accepted_user_id, s.inactive_ms FROM successors s
+    WHERE s.accepted_user_id IS NOT NULL AND s.auto_transfer = 1
+      AND NOT EXISTS (SELECT 1 FROM claims c WHERE c.altar_id = s.altar_id AND c.cancelled_at IS NULL AND c.completed_at IS NULL)
+      AND EXISTS (SELECT 1 FROM altar_members m WHERE m.altar_id = s.altar_id AND m.role = 'owner')
+      AND NOT EXISTS (SELECT 1 FROM altar_members m WHERE m.altar_id = s.altar_id AND m.role = 'owner' AND m.user_id = s.accepted_user_id)
+      AND NOT EXISTS (SELECT 1 FROM altar_members m JOIN users u ON u.id = m.user_id
+        WHERE m.altar_id = s.altar_id AND m.role = 'owner' AND u.last_seen_at > ? - s.inactive_ms)
+    LIMIT ?`, now, limit);
+export const runningClaims = (db, limit) =>
+  all(db, 'SELECT altar_id, requested_by, requested_at, executes_at, auto, reminders_sent FROM claims WHERE cancelled_at IS NULL AND completed_at IS NULL LIMIT ?', limit);
+// True for the one run that moves the count on (so two overlapping runs cannot both send the reminder).
+export async function bumpClaimReminder(db, altarId, sent) {
+  return (await run(db, 'UPDATE claims SET reminders_sent = reminders_sent + 1 WHERE altar_id = ? AND reminders_sent = ? AND cancelled_at IS NULL AND completed_at IS NULL', altarId, sent)).meta.changes > 0;
+}
+export const waitingHandovers = (db, limit) =>
+  all(db, 'SELECT altar_id, to_email, from_user_id, created_at, expires_at, reminders_sent FROM handovers ORDER BY created_at LIMIT ?', limit);
+export async function bumpHandoverReminder(db, altarId, sent) {
+  return (await run(db, 'UPDATE handovers SET reminders_sent = reminders_sent + 1 WHERE altar_id = ? AND reminders_sent = ?', altarId, sent)).meta.changes > 0;
+}
+// Ends a waiting handover whose time is up. Returns it for the one run that removed it.
+export const takeExpiredHandover = (db, { altarId, now }) =>
+  one(db, 'DELETE FROM handovers WHERE altar_id = ? AND expires_at <= ? RETURNING altar_id, to_email, from_user_id', altarId, now);
+export const listKeepers = (db, altarId) =>
+  all(db, "SELECT u.id AS user_id, u.email FROM altar_members m JOIN users u ON u.id = m.user_id WHERE m.altar_id = ? AND m.role = 'keeper' ORDER BY m.added_at, u.email", altarId);

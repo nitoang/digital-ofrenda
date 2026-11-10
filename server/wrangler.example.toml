@@ -21,6 +21,11 @@ service = "digital-ofrenda-mailer"
 # Patterns: /auth/*   /me   /me/*   /checkout   /ofrendas   /ofrendas/*   /invites/*   /successor/*   /stripe/*
 # ("/successor" with nothing after it is a web page, not part of the API.)
 
+# The daily job: successor notices and reminders, and handovers waiting for someone to sign up (server/scheduled.mjs).
+# Once a day is plenty; the minute is deliberately not :00.
+[triggers]
+crons = ["17 14 * * *"]
+
 [vars]
 # Serve your page and this Worker from this same origin: sign-in is a cookie and there is no CORS.
 APP_URL = "https://REPLACE-WITH-YOUR-SITE"

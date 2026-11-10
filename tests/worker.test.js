@@ -29,6 +29,7 @@ async function setup({ env: envOver = {}, deps: depsOver = {} } = {}) {
     now: () => clock,
     tick: ms => { clock += ms; },
     settle: async () => { await Promise.all(deferred.splice(0)); },
+    runJob: async () => { await w.runScheduled(env, deps); await Promise.all(deferred.splice(0)); },
     call: (method, path, { body, cookie, origin = ORIGIN, headers } = {}) => handler(new Request('https://api.test' + path, {
       method, headers: { ...(origin ? { origin } : {}), ...(cookie ? { cookie } : {}), ...headers },
       ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }),
@@ -611,7 +612,7 @@ test('successor: naming someone grants nothing until they agree, and agreement i
   const [mail] = await t.mailTo('heir@example.com');
   const token = /https:\/\/ofrenda\.test\/successor#s=([\w-]{43})/.exec(mail.text)[1];
   assert.equal((await owner.call('PUT', url, { email: 'other@example.com' })).status, 429, 'not again right away');
-  assert.deepEqual((await owner.json('GET', `/ofrendas/${id}/team`)).body.successor, { email: 'heir@example.com', accepted: false });
+  assert.deepEqual((await owner.json('GET', `/ofrendas/${id}/team`)).body.successor, { email: 'heir@example.com', accepted: false, waitMonths: 12, auto: true });
 
   const heir = await t.signIn('heir@example.com');
   assert.equal((await heir.call('PUT', `/ofrendas/${id}`, altar())).status, 403, 'no access yet');
@@ -1607,4 +1608,209 @@ test('visits: counted once a day for signed-in people who are not owners, and no
   assert.equal((await t.call('POST', '/ofrendas/nope/visit')).status, 204, 'says nothing about whether an ofrenda exists');
   assert.equal((await owner.call('DELETE', `/ofrendas/${id}`)).status, 200);
   assert.equal(t.db.prepare('SELECT COUNT(*) n FROM altar_visits').get().n, 0, 'gone with the ofrenda');
+});
+
+
+// ---------- reminders and the daily job ----------
+const subjects = async (t, email, re) => (await t.mailTo(email)).filter(m => re.test(m.subject));
+
+test('successor: naming one emails the owner, and the wait and automatic transfer are the owner\'s choice', async () => {
+  const t = await setup();
+  const owner = await t.signIn('owner@example.com');
+  const id = await t.altarFor(owner);
+  assert.equal((await owner.json('PUT', `/ofrendas/${id}/successor`, { email: 'heir@example.com', waitMonths: 5 })).body.error, 'bad_wait');
+  assert.equal((await owner.json('PUT', `/ofrendas/${id}/successor`, { email: 'heir@example.com', auto: 'yes' })).body.error, 'bad_wait');
+  assert.equal((await owner.call('PUT', `/ofrendas/${id}/successor`, { email: 'heir@example.com', waitMonths: 6, auto: false })).status, 200);
+  assert.equal((await subjects(t, owner.email, /named a successor/)).length, 1);
+  assert.deepEqual((await owner.json('GET', `/ofrendas/${id}/team`)).body.successor, { email: 'heir@example.com', accepted: false, waitMonths: 6, auto: false });
+  assert.equal((await owner.json('PUT', `/ofrendas/${id}/successor/settings`, { waitMonths: 12 })).status, 200);
+  assert.deepEqual((await owner.json('GET', `/ofrendas/${id}/team`)).body.successor, { email: 'heir@example.com', accepted: false, waitMonths: 12, auto: true });
+  assert.equal((await owner.json('PUT', `/ofrendas/${id}/successor/settings`, { waitMonths: 7 })).body.error, 'bad_wait');
+});
+
+test('daily job: after a year away the 30-day notice starts by itself, with reminders on days 15 and 27, then the successor becomes owner', async () => {
+  const t = await setup();
+  const { owner, heir, id } = await t.heirScenario();
+  await t.advance(t.RULES.successorWaits[12] - DAY, [heir]);
+  await t.runJob();
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM claims').get().n, 0, 'not yet a year');
+  await t.advance(2 * DAY, [heir]);
+  await t.runJob(); await t.runJob();
+  assert.equal(t.db.prepare('SELECT auto FROM claims WHERE altar_id = ?').get(id).auto, 1);
+  assert.equal((await subjects(t, owner.email, /pass to your successor in 30 days/)).length, 1, 'once, however often the job runs');
+  assert.equal((await subjects(t, heir.email, /may soon be yours/)).length, 1);
+  await t.advance(15 * DAY, [heir]); await t.runJob(); await t.runJob();
+  assert.equal((await subjects(t, owner.email, /Reminder/)).length, 1);
+  await t.advance(12 * DAY, [heir]); await t.runJob();
+  assert.equal((await subjects(t, owner.email, /Reminder/)).length, 2);
+  await t.advance(3 * DAY, [heir]); await t.runJob();
+  assert.equal((await subjects(t, owner.email, /Reminder/)).length, 2, 'no more after the second');
+  assert.equal(t.db.prepare("SELECT role FROM altar_members WHERE altar_id = ? AND user_id = ?").get(id, heir.id).role, 'owner');
+  assert.equal(t.db.prepare("SELECT role FROM altar_members WHERE altar_id = ? AND user_id = ?").get(id, owner.id).role, 'keeper', 'the old owner stays as a co-keeper');
+  assert.equal((await subjects(t, owner.email, /new owner/)).length, 1);
+});
+
+test('daily job: the owner signing in during the notice stops it, and it starts again only after another full wait', async () => {
+  const t = await setup();
+  const { owner, heir, id } = await t.heirScenario();
+  await t.advance(t.RULES.successorWaits[12] + DAY, [heir]);
+  await t.runJob();
+  await t.advance(10 * DAY, [heir]);
+  const back = await t.signIn('owner@example.com'); // signing in at all is enough
+  assert.ok(back);
+  assert.ok(t.db.prepare('SELECT cancelled_at FROM claims WHERE altar_id = ?').get(id).cancelled_at);
+  await t.advance(40 * DAY, [heir, back]); await t.runJob();
+  assert.equal(t.db.prepare('SELECT role FROM altar_members WHERE altar_id = ? AND user_id = ?').get(id, owner.id).role, 'owner');
+  assert.equal((await subjects(t, owner.email, /pass to your successor in 30 days/)).length, 1, 'no second notice yet');
+});
+
+test('daily job: six months works, and with automatic transfer off nothing starts until the successor asks', async () => {
+  const t = await setup();
+  const { owner, heir, id } = await t.heirScenario();
+  await owner.call('PUT', `/ofrendas/${id}/successor/settings`, { waitMonths: 6, auto: false });
+  await t.advance(t.RULES.successorWaits[6] + DAY, [heir]);
+  await t.runJob();
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM claims').get().n, 0, 'automatic transfer is off');
+  assert.equal((await heir.json('POST', `/ofrendas/${id}/claim`)).status, 201, 'the successor may ask once the six months are up');
+  await owner.call('PUT', `/ofrendas/${id}/successor/settings`, { waitMonths: 6, auto: true });
+  const t2 = await setup();
+  const s2 = await t2.heirScenario();
+  await s2.owner.call('PUT', `/ofrendas/${s2.id}/successor/settings`, { waitMonths: 6 });
+  await t2.advance(t2.RULES.successorWaits[6] - 10 * DAY, [s2.heir]); await t2.runJob();
+  assert.equal(t2.db.prepare('SELECT COUNT(*) n FROM claims').get().n, 0, 'too early for six months');
+  await t2.advance(11 * DAY, [s2.heir]); await t2.runJob();
+  assert.equal(t2.db.prepare('SELECT COUNT(*) n FROM claims').get().n, 1);
+});
+
+test('daily job: a successor who asked is still the one who finishes it; the job only reminds', async () => {
+  const t = await setup();
+  const { owner, heir, id } = await t.heirScenario();
+  await owner.call('PUT', `/ofrendas/${id}/successor/settings`, { auto: false });
+  await t.advance(t.RULES.inactiveAfter + DAY, [heir]);
+  assert.equal((await heir.json('POST', `/ofrendas/${id}/claim`)).status, 201);
+  await t.advance(16 * DAY, [heir]); await t.runJob();
+  assert.equal((await subjects(t, owner.email, /Reminder/)).length, 1);
+  await t.advance(20 * DAY, [heir]); await t.runJob();
+  assert.equal(t.db.prepare('SELECT role FROM altar_members WHERE altar_id = ? AND user_id = ?').get(id, owner.id).role, 'owner', 'not completed by the job');
+  assert.equal((await heir.json('POST', `/ofrendas/${id}/claim/complete`)).body.ok, true);
+});
+
+async function waitingHandover(t, extraSetup) {
+  const giver = await t.signIn('giver@example.com');
+  const id = await t.altarFor(giver, altar(frame('a', png())));
+  const people = {};
+  for (const n of ['fan1', 'fan2', 'fan3']) people[n] = await t.signIn(`${n}@example.com`);
+  if (extraSetup) await extraSetup({ giver, id, ...people });
+  assert.equal((await giver.json('POST', `/ofrendas/${id}/handover`, { email: 'never@example.com', confirm: 'handover' })).body.status, 'pending');
+  return { giver, id, ...people };
+}
+const roleOf = (t, id, u) => t.db.prepare('SELECT role FROM altar_members WHERE altar_id = ? AND user_id = ?').get(id, u.id)?.role ?? null;
+
+test('daily job: a handover nobody signs up for sends reminders after 30 days, then passes to the most frequent signed-in visitor', async () => {
+  const t = await setup();
+  const w = await waitingHandover(t, async ({ id, fan1, fan2 }) => {
+    await fan1.call('POST', `/ofrendas/${id}/visit`); await fan2.call('POST', `/ofrendas/${id}/visit`);
+  });
+  const all = [w.giver, w.fan1, w.fan2, w.fan3];
+  await t.advance(DAY, all); await w.fan1.call('POST', `/ofrendas/${w.id}/visit`); // fan1 has two days, fan2 one
+  await t.advance(28 * DAY, all); await t.runJob();
+  assert.equal((await subjects(t, 'never@example.com', /still waiting/)).length, 0, 'no reminder before 30 days');
+  await t.advance(2 * DAY, all); await t.runJob(); await t.runJob();
+  assert.equal((await subjects(t, 'never@example.com', /still waiting/)).length, 1);
+  await t.advance(30 * DAY, all); await t.runJob();
+  await t.advance(25 * DAY, all); await t.runJob();
+  assert.equal((await subjects(t, 'never@example.com', /still waiting/)).length, 3, 'days 30, 60 and 85');
+  assert.equal(roleOf(t, w.id, w.fan1), null, 'not before the 90 days are up');
+  await t.advance(6 * DAY, all); await t.runJob(); await t.runJob();
+  assert.equal(roleOf(t, w.id, w.fan1), 'owner');
+  assert.equal(roleOf(t, w.id, w.fan2), null, 'only the top visitor');
+  assert.equal(roleOf(t, w.id, w.giver), 'owner', 'the giver stays an owner');
+  assert.equal((await subjects(t, w.fan1.email, /You now own/)).length, 1);
+  assert.equal((await subjects(t, w.giver.email, /not accepted/)).length, 1);
+  assert.equal((await subjects(t, 'never@example.com', /been closed/)).length, 1);
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM handovers').get().n, 0);
+  assert.equal((await t.signIn('never@example.com')).email, 'never@example.com', 'signing up later gets nothing, and works');
+  assert.equal(t.db.prepare("SELECT COUNT(*) n FROM altar_members m JOIN users u ON u.id = m.user_id WHERE u.email = 'never@example.com' AND m.role = 'owner'").get().n, 0);
+});
+
+test('daily job: a tie between visitors makes them all owners', async () => {
+  const t = await setup();
+  const w = await waitingHandover(t, async ({ id, fan1, fan2, fan3 }) => {
+    for (const f of [fan1, fan2, fan3]) await f.call('POST', `/ofrendas/${id}/visit`);
+  });
+  await t.advance(DAY, [w.giver, w.fan1, w.fan2, w.fan3]);
+  for (const f of [w.fan1, w.fan2]) await f.call('POST', `/ofrendas/${w.id}/visit`);
+  await t.advance(t.RULES.handoverWait, [w.giver, w.fan1, w.fan2, w.fan3]); await t.runJob();
+  assert.deepEqual([w.fan1, w.fan2, w.fan3].map(f => roleOf(t, w.id, f)), ['owner', 'owner', null]);
+});
+
+test('daily job: with no visitors a handover goes to the successor, then the co-keepers, otherwise it stays put', async () => {
+  const t = await setup();
+  const none = await waitingHandover(t);
+  await t.advance(t.RULES.handoverWait, [none.giver]); await t.runJob();
+  assert.equal(roleOf(t, none.id, none.giver), 'owner');
+  assert.equal((await subjects(t, none.giver.email, /not accepted/)).length, 1);
+  assert.ok((await t.mailTo(none.giver.email)).some(m => /stays with you/.test(m.text)));
+
+  const t2 = await setup();
+  const k = await waitingHandover(t2, async ({ giver, id, fan1, fan2 }) => {
+    for (const f of [fan1, fan2]) {
+      await giver.call('POST', `/ofrendas/${id}/invites`, { email: f.email });
+      await f.call('POST', '/invites/accept', { token: await t2.tokenFrom(f.email, /#i=([\w-]{43})/) });
+    }
+  });
+  await t2.advance(t2.RULES.handoverWait, [k.giver, k.fan1, k.fan2]); await t2.runJob();
+  assert.deepEqual([k.fan1, k.fan2, k.fan3].map(f => roleOf(t2, k.id, f)), ['owner', 'owner', null], 'the people who already keep it');
+
+  const t3 = await setup();
+  const sc = await waitingHandover(t3, async ({ giver, id, fan1, fan2 }) => {
+    await giver.call('POST', `/ofrendas/${id}/invites`, { email: fan1.email });
+    await fan1.call('POST', '/invites/accept', { token: await t3.tokenFrom(fan1.email, /#i=([\w-]{43})/) });
+    await giver.call('PUT', `/ofrendas/${id}/successor`, { email: fan2.email });
+    await fan2.call('POST', '/successor/accept', { token: await t3.tokenFrom(fan2.email, /#s=([\w-]{43})/) });
+  });
+  await t3.advance(t3.RULES.handoverWait, [sc.giver, sc.fan1, sc.fan2]); await t3.runJob();
+  assert.deepEqual([sc.fan1, sc.fan2].map(f => roleOf(t3, sc.id, f)), ['keeper', 'owner'], 'the named successor, not every co-keeper');
+});
+
+test('daily job: a person who signs up in time gets the handover, and no reminders or fallback follow', async () => {
+  const t = await setup();
+  const w = await waitingHandover(t, async ({ id, fan1 }) => { await fan1.call('POST', `/ofrendas/${id}/visit`); });
+  await t.advance(40 * DAY, [w.giver, w.fan1]);
+  const late = await t.signIn('never@example.com');
+  assert.equal(roleOf(t, w.id, late), 'owner');
+  await t.advance(60 * DAY, [w.giver, w.fan1, late]); await t.runJob();
+  assert.equal(roleOf(t, w.id, w.fan1), null);
+  assert.equal((await subjects(t, 'never@example.com', /still waiting/)).length, 0);
+});
+
+test('daily job: an ofrenda locked for its new owner is still handed over, just locked', async () => {
+  const t = await setup();
+  const w = await waitingHandover(t, async ({ id, fan1 }) => {
+    await fan1.call('POST', `/ofrendas/${id}/visit`);
+    for (let i = 0; i < t.RULES.freeAltars; i++) { await t.altarFor(fan1); t.tick(1000); }
+  });
+  await t.advance(t.RULES.handoverWait, [w.giver, w.fan1]); await t.runJob();
+  assert.equal(roleOf(t, w.id, w.fan1), 'owner');
+  assert.equal((await w.fan1.json('PUT', `/ofrendas/${w.id}`, altar(frame('a')))).body.error, 'ofrenda_locked');
+  assert.equal((await subjects(t, w.fan1.email, /waiting for an upgrade/)).length, 1);
+});
+
+test('a locked owner can still share to view, but cannot invite anyone to edit', async () => {
+  const t = await setup();
+  const giver = await t.signIn('giver@example.com'), full = await t.signIn('full@example.com');
+  const gift = await t.altarFor(giver);
+  await giver.call('POST', `/ofrendas/${gift}/invites`, { email: full.email });
+  await full.call('POST', '/invites/accept', { token: await t.tokenFrom(full.email, /#i=([\w-]{43})/) });
+  t.tick(1000);
+  for (let i = 0; i < t.RULES.freeAltars; i++) { await t.altarFor(full); t.tick(1000); }
+  await giver.call('DELETE', `/ofrendas/${gift}`);
+  assert.equal((await full.json('GET', `/ofrendas/${gift}/team`)).body.locked, true);
+  const edit = await full.json('POST', `/ofrendas/${gift}/share`, { email: 'kim@example.com', access: 'edit' });
+  assert.deepEqual([edit.status, edit.body.error], [402, 'ofrenda_locked']);
+  assert.equal((await full.json('POST', `/ofrendas/${gift}/invites`, { email: 'kim@example.com' })).body.error, 'ofrenda_locked');
+  assert.equal((await full.call('POST', `/ofrendas/${gift}/share`, { email: 'kim@example.com', access: 'view' })).status, 201);
+  assert.equal((await t.mailTo('kim@example.com')).filter(m => /invited you/.test(m.subject)).length, 0);
+  t.db.prepare("UPDATE users SET plan = 'platinum' WHERE id = ?").run(full.id);
+  assert.equal((await full.call('POST', `/ofrendas/${gift}/share`, { email: 'kim@example.com', access: 'edit' })).status, 201, 'unlocked once upgraded');
 });
