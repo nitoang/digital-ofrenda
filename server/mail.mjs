@@ -88,7 +88,7 @@ export const claimCancelledMessage = ({ to }) => ({
 
 export const handoverMessage = ({ to, role }) => ({
   to,
-  subject: role === 'owner' ? 'You now keep an ofrenda' : 'An ofrenda you kept has a new owner',
+  subject: role === 'owner' ? 'You now own an ofrenda' : 'An ofrenda you kept has a new owner',
   text: role === 'owner'
     ? `The handover is done. You're now the owner of the ofrenda you agreed to look after. Thank you for carrying it.${signoff}`
     : `Ownership of an ofrenda you kept has moved to its successor. You're still a co-keeper and can keep adding to it.${signoff}`,
@@ -109,13 +109,13 @@ export const emailChangedNoticeMessage = ({ to, newEmail }) => ({
 export const nowOwnerMessage = ({ to }) => ({
   to,
   subject: 'You now own an ofrenda',
-  text: `The person who owned an ofrenda you help keep has stepped away from it, so it has been passed to you. Nothing was deleted, and everything is just as they left it.\n\nYou can keep adding to it, choose who else helps, and decide what happens to it next. It counts as one of your ofrendas.${signoff}`,
+  text: `We haven't seen the person who owned an ofrenda you help keep sign in for a long time, so it has been passed to you. Nothing was deleted, and everything is just as they left it.\n\nYou can keep adding to it, choose who else helps, and decide what happens to it next. It counts as one of your ofrendas.${signoff}`,
 });
 
 export const lockedMessage = ({ to }) => ({
   to,
   subject: 'An ofrenda was passed to you, and it is waiting for an upgrade',
-  text: `The person who owned an ofrenda you help keep has stepped away from it, so it has been passed to you.\n\nFree accounts can own 3 ofrendas, and you are already at that number. So this one is locked for now. You and anyone you share it with can still view it, and it stays exactly as it is. It can't be changed until you upgrade to Platinum or make room by passing one of your other ofrendas on.\n\nIt will never be deleted because of this, and nothing is asked of you.${signoff}`,
+  text: `We haven't seen the person who owned an ofrenda you help keep sign in for a long time, so it has been passed to you.\n\nFree accounts can own 3 ofrendas, and you are already at that number. So this one is locked for now. You and anyone you share it with can still view it, and it stays exactly as it is. It can't be changed until you upgrade to Platinum or make room by passing one of your other ofrendas on.\n\nIt will never be deleted because of this, and nothing is asked of you.${signoff}`,
 });
 
 // A handover to someone with no account yet. They sign in with this address and it is theirs.
@@ -172,14 +172,14 @@ export const autoClaimSuccessorMessage = ({ to, executesAt }) => ({
 export const handoverReminderMessage = ({ to, from, link, name = '', daysLeft }) => ({
   to,
   subject: `${from} is still waiting for you to accept an ofrenda`,
-  text: `${from} handed an ofrenda${forName(name)} over to you, and it's still waiting. To accept, sign in with this email address:\n${link}\n\nThere are ${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} left. After that, ${from} will be told, and the ofrenda may go to someone else who has been visiting it.\n\n${whyYouGotThis(from)}${warmSign}`,
+  text: `${from} handed an ofrenda${forName(name)} over to you, and it's still waiting. To accept, sign in with this email address:\n${link}\n\nThere are ${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} left. After that, ${from} will be told, and the ofrenda may go to someone who has been visiting it, so it stays with people who care about it.\n\n${whyYouGotThis(from)}${warmSign}`,
 });
 
 // The 90 days are up and the person never signed up. `outcome`: visitors, successor, keepers or none.
 export const handoverEndedGiverMessage = ({ to, outcome }) => ({
   to,
   subject: 'Your handover was not accepted',
-  text: `The person you handed an ofrenda to never signed up, so the handover has ended.\n\n${{
+  text: `The person you handed an ofrenda to didn't get the chance to sign up, so the handover has ended.\n\n${{
     visitors: 'We passed it to the signed-in person who visited it most often. You stay an owner too, and you can see who helps keep it on its Keepers page.',
     successor: 'Nobody had visited it, so we passed it to the successor you named. You stay an owner too.',
     keepers: 'Nobody had visited it, so we passed it to the people who already help you keep it. You stay an owner too.',
