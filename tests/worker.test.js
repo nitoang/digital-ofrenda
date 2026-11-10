@@ -1814,3 +1814,76 @@ test('a locked owner can still share to view, but cannot invite anyone to edit',
   t.db.prepare("UPDATE users SET plan = 'platinum' WHERE id = ?").run(full.id);
   assert.equal((await full.call('POST', `/ofrendas/${gift}/share`, { email: 'kim@example.com', access: 'edit' })).status, 201, 'unlocked once upgraded');
 });
+
+// ---------- download everything ----------
+test('export: needs a signed-in person, and comes down as a JSON attachment', async () => {
+  const t = await setup();
+  assert.equal((await t.call('GET', '/me/export')).status, 401);
+  const a = await t.signIn('a@example.com');
+  const res = await a.call('GET', '/me/export');
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-disposition'), /^attachment; filename="digital-ofrenda-export-\d{4}-\d{2}-\d{2}\.json"$/);
+  assert.equal(res.headers.get('cache-control'), 'no-store');
+  const body = await res.json();
+  assert.equal(body.format, 'digital-ofrenda-account-export');
+  assert.equal(body.account.email, 'a@example.com');
+});
+
+test('export: holds my ofrendas with their photos, keepers, successor and invitations', async () => {
+  const t = await setup();
+  const a = await t.signIn('a@example.com'), b = await t.signIn('b@example.com');
+  const photo = png();
+  const id = await t.altarFor(a, altar(frame('x', photo)));
+  assert.equal((await a.call('PUT', `/ofrendas/${id}/slug`, { slug: 'abuela-rosa' })).status, 200);
+  await a.call('POST', `/ofrendas/${id}/invites`, { email: 'b@example.com' });
+  await b.call('POST', '/invites/accept', { token: await t.tokenFrom('b@example.com', /#i=([\w-]{43})/) });
+  await a.call('POST', `/ofrendas/${id}/invites`, { email: 'pending@example.com' });
+  assert.equal((await a.call('PUT', `/ofrendas/${id}/successor`, { email: 'heir@example.com' })).status, 200);
+
+  const owner = (await (await a.call('GET', '/me/export')).json()).ofrendas;
+  assert.equal(owner.length, 1);
+  const o = owner[0];
+  assert.deepEqual([o.id, o.role, o.name], [id, 'owner', 'abuela-rosa']);
+  assert.equal(o.state.items[0].src, photo, 'the photo itself is in the file');
+  assert.deepEqual(o.keepers.map(k => [k.email, k.role]), [['a@example.com', 'owner'], ['b@example.com', 'keeper']]);
+  assert.deepEqual(o.pendingInvitations.map(i => i.email), ['pending@example.com']);
+  assert.equal(o.successor.email, 'heir@example.com');
+
+  // A co-keeper gets the ofrenda and who keeps it, but not the owner's invitations or successor.
+  const keeper = (await (await b.call('GET', '/me/export')).json()).ofrendas;
+  assert.equal(keeper.length, 1);
+  assert.equal(keeper[0].role, 'keeper');
+  assert.equal(keeper[0].pendingInvitations, undefined);
+  assert.equal(keeper[0].successor, undefined);
+  assert.equal(keeper[0].state.items[0].src, photo);
+});
+
+test('export: only my own account, nothing secret, and a damaged or empty ofrenda does not break the rest', async () => {
+  const t = await setup();
+  const a = await t.signIn('a@example.com'), b = await t.signIn('b@example.com');
+  const mine = await t.altarFor(a);                    // created, never saved: no state yet
+  const broken = await t.altarFor(a, altar());
+  t.db.prepare('UPDATE altars SET state = ? WHERE id = ?').run('{not json', broken);
+  const theirs = await t.altarFor(b, altar(frame('x', png())));
+
+  const res = await a.call('GET', '/me/export');
+  const text = await res.text();
+  const body = JSON.parse(text);
+  assert.deepEqual(body.ofrendas.map(o => o.id).sort(), [mine, broken].sort());
+  assert.ok(!text.includes(theirs), "another person's ofrenda never appears");
+  assert.ok(!text.includes('b@example.com'), "another person's address never appears");
+  assert.equal(body.ofrendas.find(o => o.id === mine).state, null);
+  assert.equal(body.ofrendas.find(o => o.id === broken).state, null);
+  for (const secret of ['hash', 'token', 'cookie', 'session', 'code']) assert.ok(!new RegExp(`"[^"]*${secret}[^"]*":`, 'i').test(text), `no ${secret} field`);
+  const stored = t.db.prepare('SELECT id_hash FROM sessions WHERE user_id = ?').get(a.id).id_hash;
+  assert.ok(!text.includes(stored), 'no stored session value');
+});
+
+test('export: the upgrades an ofrenda has are listed', async () => {
+  const t = await setup();
+  const a = await t.signIn('a@example.com');
+  const id = await t.altarFor(a, altar(frame('x', png())));
+  await t.store.grantFeature(t.env.DB, id, 'extraPhotos', t.now());
+  const [o] = (await (await a.call('GET', '/me/export')).json()).ofrendas;
+  assert.deepEqual(o.upgrades.map(u => u.feature), ['extraPhotos']);
+});

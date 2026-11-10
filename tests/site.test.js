@@ -584,6 +584,19 @@ withSite('account: changing the email address needs the code sent to the new one
   await assertLabelled(page);
 });
 
+withSite('account: "Download my data" saves one JSON file with my ofrendas in it', async () => {
+  const { page } = await visitor();
+  await signIn(page, 'maria@example.com');
+  const id = await startOfrenda(page);
+  await page.goto(site.url + '/my');
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('link', { name: 'Download my data' }).click()]);
+  assert.match(download.suggestedFilename(), /^digital-ofrenda-export-\d{4}-\d{2}-\d{2}\.json$/);
+  const body = JSON.parse(require('node:fs').readFileSync(await download.path(), 'utf8'));
+  assert.equal(body.account.email, 'maria@example.com');
+  assert.ok(body.ofrendas.some(o => o.id === id && o.role === 'owner'));
+  await assertLabelled(page);
+});
+
 withSite('account: deleting asks for the email, warns about owned ofrendas, then signs out for good', async () => {
   const { page } = await visitor();
   await signIn(page, 'maria@example.com');
