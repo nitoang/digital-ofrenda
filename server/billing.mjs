@@ -44,6 +44,10 @@ export async function handleStripe(request, env, deps) {
   const feature = s?.metadata?.feature;
   if (PAID_EVENTS.includes(event?.type) && s?.payment_status === 'paid') {
     const known = ID_RE.test(s.client_reference_id || '') && (feature === 'platinum' || FEATURES.includes(feature));
+    const pi = typeof s.payment_intent === 'string' && ID_RE.test(s.payment_intent) ? s.payment_intent : null;
+    // Stripe does not promise order. A "paid" event that turns up after the refund of the same payment (a late retry)
+    // must not hand the upgrade back, so a payment we already know was refunded unlocks nothing.
+    if (known && pi && (await store.getPurchase(env.DB, pi))?.refunded_at) return json({ received: true });
     let ok = known; // idempotent: Stripe may deliver twice
     if (known && feature === 'platinum') ok = await store.setPlan(env.DB, s.client_reference_id, 'platinum');
     else if (known) ok = await store.grantFeature(env.DB, s.client_reference_id, feature, deps.now());
@@ -51,8 +55,8 @@ export async function handleStripe(request, env, deps) {
     if (!ok) {
       console.error('paid checkout for something that does not exist:', feature, s.client_reference_id);
       deps.alert?.('paid_not_delivered', `Stripe says a checkout was paid (payment ${typeof s.payment_intent === 'string' ? s.payment_intent : 'unknown'}) but it unlocked nothing: feature "${String(feature).slice(0, 30)}", reference "${String(s.client_reference_id).slice(0, 30)}". Check it in Stripe and refund or fix it by hand.`);
-    } else if (typeof s.payment_intent === 'string' && ID_RE.test(s.payment_intent)) {
-      await store.recordPurchase(env.DB, { paymentIntent: s.payment_intent, feature, reference: s.client_reference_id, now: deps.now() });
+    } else if (pi) {
+      await store.recordPurchase(env.DB, { paymentIntent: pi, feature, reference: s.client_reference_id, now: deps.now() });
     }
   } else if (REFUND_EVENTS.includes(event?.type) && s?.refunded === true) {
     await handleRefund(env, deps, s);
@@ -72,7 +76,9 @@ async function handleRefund(env, deps, charge) {
     deps.alert?.('refund_untraced', `Stripe refunded a payment (${pi || 'no payment id'}) that we cannot match to an upgrade, so nothing was taken back. Check it in Stripe.`);
     return; // 200 anyway: a retry would not help
   }
-  if (pi && purchase) await store.markRefunded(env.DB, pi, deps.now());
+  // A refund that arrives first is written down too, so the "paid" event that follows it cannot unlock anything.
+  if (pi && !purchase) await store.recordPurchase(env.DB, { paymentIntent: pi, feature, reference, now: deps.now() });
+  if (pi) await store.markRefunded(env.DB, pi, deps.now());
   if ((await store.countUnrefunded(env.DB, feature, reference)) > 0) return; // another payment still covers it
   if (feature === 'platinum') await store.clearPlan(env.DB, reference);
   else await store.removeFeature(env.DB, reference, feature);
