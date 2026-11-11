@@ -415,3 +415,13 @@ export async function claimAlert(db, { kind, now, cooldown }) {
     ON CONFLICT (kind) DO UPDATE SET last_sent_at = excluded.last_sent_at, suppressed = 0`, kind, now);
   return before;
 }
+
+// ---------- moving inline photos into the photo store ----------
+// Ofrendas saved before the photo store was in use still hold their photos inline. Oldest first, a few at a time.
+export const altarsWithInlinePhotos = (db, limit) =>
+  all(db, `SELECT id, state FROM altars WHERE state LIKE '%"src":"data:image%' ORDER BY updated_at, id LIMIT ?`, limit);
+// Replaces the state only if it is still exactly what was read (a save made meanwhile wins), and keeps updated_at as it was:
+// moving a photo is not an edit. True if it was replaced.
+export async function replaceState(db, id, expected, next) {
+  return (await run(db, 'UPDATE altars SET state = ? WHERE id = ? AND state = ?', next, id, expected)).meta.changes > 0;
+}

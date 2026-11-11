@@ -6,8 +6,11 @@
  *   storage = {
  *     canWrite: boolean,
  *     subscribe(id, onState(stateOrNull, {fromCache, hasPendingWrites}), onError) -> unsubscribe,
- *     save(id, state) -> Promise
+ *     save(id, state) -> Promise (may resolve to { photos: { <item id>: "/ofrendas/<id>/photos/<sha256>" } } when the
+ *                         backend moved new photos into its own photo store; the page then holds the short path instead)
  *   }
+ * A backend that does that serves each path as an image, so a photo's src may be that path as well as an inline image.
+ * Export always writes photos inline, so a downloaded file stands on its own.
  *
  * Usage:
  *   <script src="ofrenda.js"></script>
@@ -93,6 +96,10 @@
 
   // Only inline raster images are accepted, never remote URLs or other schemes.
   const isImage = v => typeof v === 'string' && /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(v);
+  // A shared altar's server keeps photos in its own photo store and names them by a same-site path. Nothing else that
+  // looks like a URL is ever accepted: the path shape is fixed, so it can only point at /ofrendas/<id>/photos/<hash>.
+  const PHOTO_PATH = /^\/ofrendas\/[A-Za-z0-9_-]{1,64}\/photos\/[a-f0-9]{64}$/;
+  const isPhotoSrc = v => isImage(v) || (typeof v === 'string' && PHOTO_PATH.test(v));
 
   // Earlier versions kept a single `photo` on the state; now each photo frame holds its own `src`.
   const migratePhoto = state => {
@@ -128,7 +135,7 @@
       if (rot !== 0) item.rot = rot;
       if (ITEMS[raw.type].candle) item.lit = raw.lit === true;
       if (raw.type === 'note') item.text = str(raw.text, 80) || DEFAULT_NOTE;
-      if (raw.type === 'photo' && isImage(raw.src)) item.src = raw.src;
+      if (raw.type === 'photo' && isPhotoSrc(raw.src)) item.src = raw.src;
       items.push(item);
     }
     const state = { kind: KINDS[data.kind] ? data.kind : 'person', tiers: data.tiers === 7 ? 7 : 3, name: str(data.name, 80), dates: str(data.dates, 80), items };
@@ -360,7 +367,8 @@
       try {
         const json = JSON.stringify(this._state);
         this._lastJson = json;
-        await this._store.save(this.id || 'default', JSON.parse(json));
+        const reply = await this._store.save(this.id || 'default', JSON.parse(json));
+        this._adoptPhotoPaths(reply && reply.photos, JSON.parse(json));
         this._say('');
       } catch {
         this._say('Could not save to the shared altar. Check your connection and try again.');
@@ -368,6 +376,23 @@
         this._writing = false;
         if (this._again) { this._again = false; this._flush(); } else this._applyPending();
       }
+    }
+
+    // A shared altar's server may move a new photo into its own photo store and answer with its path. Swap the path in
+    // quietly (the picture on screen is already right), so later saves send a short path, not the whole image again.
+    // `sent` is the copy that was saved: a photo changed again while the save was in flight keeps its newer image.
+    _adoptPhotoPaths(paths, sent) {
+      if (!paths || typeof paths !== 'object') return;
+      const sentPhotos = new Map(sent.items.filter(i => i.type === 'photo').map(i => [i.id, i]));
+      let changed = false;
+      for (const item of this._state.items) {
+        const was = sentPhotos.get(item.id), path = paths[item.id];
+        if (!was || typeof path !== 'string' || !PHOTO_PATH.test(path) || typeof was.src !== 'string' || !was.src.startsWith('data:')) continue;
+        if (item.src === was.src) item.src = path;
+        was.src = path;
+        changed = true;
+      }
+      if (changed) this._lastJson = JSON.stringify(sent); // so the server's copy is recognised as our own save, not a remote change
     }
 
     _save() {
@@ -397,15 +422,34 @@
       return true;
     }
 
-    _download() {
-      const blob = new Blob([JSON.stringify(this.exportState(), null, 2)], { type: 'application/json' });
+    // A shared altar may hold photos as paths on its own server. A file people keep must stand on its own, so for the
+    // download each one is fetched and put back inline. A photo that cannot be fetched leaves an empty frame.
+    async _inlineStoredPhotos(data) {
+      let lost = 0;
+      for (const item of data.items) {
+        if (item.type !== 'photo' || typeof item.src !== 'string' || !PHOTO_PATH.test(item.src)) continue;
+        try {
+          const res = await fetch(item.src, { credentials: 'same-origin' });
+          if (!res.ok) throw new Error('status ' + res.status);
+          const blob = await res.blob();
+          item.src = await new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = reject; r.readAsDataURL(blob); });
+          if (!isImage(item.src)) throw new Error('not an image');
+        } catch { delete item.src; lost++; }
+      }
+      return lost;
+    }
+
+    async _download() {
+      const data = this.exportState();
+      const lost = await this._inlineStoredPhotos(data);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       const slug = (this._state.name || 'ofrenda').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'ofrenda';
       a.href = url; a.download = slug + '.ofrenda.json';
       this._root.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      this._say('Ofrenda exported.');
+      this._say(lost ? `Ofrenda exported, but ${lost === 1 ? 'one photo' : lost + ' photos'} could not be included.` : 'Ofrenda exported.');
     }
 
     async _importFile(file) {

@@ -35,7 +35,10 @@ export function makeStorage({ canWrite, onUpgrade, onSignedOut }) {
       const res = await fetch(`/ofrendas/${encodeURIComponent(id)}`, {
         method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(state),
       });
-      if (res.ok) return;
+      if (res.ok) {
+        // The Worker may answer { photos: { <item id>: <path> } } for photos it moved into its photo store.
+        try { return await res.json(); } catch { return null; }
+      }
       let body = null;
       try { body = await res.json(); } catch { /* not JSON */ }
       if (res.status === 402 && body && body.upgrade) onUpgrade?.(body.upgrade);

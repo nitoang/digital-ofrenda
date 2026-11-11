@@ -7,6 +7,8 @@ import * as store from './store.mjs';
 import { requireUser, sessionFrom } from './auth.mjs';
 import { RULES } from './rules.mjs';
 import { retireOwner } from './owners.mjs';
+import { canView } from './access.mjs';
+import { externalizePhotos, collectGarbage, hasPhotoPaths, MissingPhoto } from './photos.mjs';
 
 export const MAX_BODY_BYTES = 2_500_000;
 
@@ -28,11 +30,7 @@ export async function handleCreate(request, env, deps) {
 // ofrenda answers a stranger exactly as a missing one does, so nothing says it exists. Returns only the altar, never
 // who keeps it. Search engines are asked to skip it (it is a memorial, not a web page to be indexed).
 const ROBOTS = 'noindex, nofollow';
-export async function canView(request, env, deps, altar) {
-  if (altar.visibility !== 'private') return true;
-  const s = await sessionFrom(request, env, deps);
-  return !!s && !!(await store.getRole(env.DB, altar.id, s.user.id));
-}
+export { canView };
 
 export async function handleGet(request, env, deps, id) {
   const altar = await store.getAltar(env.DB, id);
@@ -70,11 +68,25 @@ export async function handleSave(request, env, deps, id) {
   let previous = null;
   try { previous = altar?.state ? JSON.parse(altar.state) : null; } catch { /* unreadable old state: treat as empty */ }
   const entitlements = await store.getEntitlements(env.DB, id, FEATURES);
-  const r = validateOfrenda(input, { entitlements, previous });
+  const r = validateOfrenda(input, { entitlements, previous, altarId: id });
   if (!r.ok) return json({ error: r.code, message: r.message, ...(r.feature ? { upgrade: r.feature } : {}) }, r.status);
 
-  await store.saveState(env.DB, id, JSON.stringify(r.state), deps.now());
-  return json({ ok: true });
+  // With a photo bucket, new photos go there and the saved state keeps only their paths. Without one, a path means nothing.
+  let state = r.state, saved = {};
+  if (env.PHOTOS) {
+    try { ({ state, saved } = await externalizePhotos(env, id, r.state)); }
+    catch (e) { if (e instanceof MissingPhoto) return json({ error: 'bad_image', message: 'A photo on this ofrenda could not be found. Add it again.' }, 422); throw e; }
+  } else if (hasPhotoPaths(r.state)) {
+    return json({ error: 'bad_image', message: 'Photos must be small PNG, JPEG, WebP or GIF images.' }, 422);
+  }
+
+  await store.saveState(env.DB, id, JSON.stringify(state), deps.now());
+  if (env.PHOTOS) {
+    // Delete what is no longer used, judged against what is stored now (a concurrent save may have put a photo back).
+    try { await collectGarbage(env, id, [previous, state], (await store.getAltar(env.DB, id))?.state); }
+    catch (e) { deps.alert?.('photo_cleanup_failed', `Could not delete unused photos after a save: ${e?.message}`); }
+  }
+  return json({ ok: true, ...(Object.keys(saved).length ? { photos: saved } : {}) });
 }
 
 export async function handleDelete(request, env, deps, id) {

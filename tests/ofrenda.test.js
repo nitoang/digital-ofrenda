@@ -550,3 +550,85 @@ test('the demo page works under its strict Content-Security-Policy', async () =>
   await ctx.close();
   server.close();
 });
+
+// ---- photos kept by a shared altar's server: the page adopts the short paths it is given ----
+const PATH_A = '/ofrendas/t/photos/' + 'a'.repeat(64), PATH_B = '/ofrendas/t/photos/' + 'b'.repeat(64);
+
+// A shared altar with one empty photo frame whose backend records every save. `reply(n, state)` decides what save n answers.
+async function sharedAltar(replyJs) {
+  const ctx = await h.browser.newContext();
+  const page = await ctx.newPage();
+  page.on('pageerror', e => h.errors.push(e.message));
+  await page.goto(require('./helpers').url('tests/blank.html'));
+  await page.evaluate(replySource => {
+    window.__saves = []; window.__release = [];
+    const reply = eval(replySource);
+    customElements.get('digital-ofrenda').storage = {
+      canWrite: true,
+      subscribe: (id, onState) => { setTimeout(() => onState({ format: 'digital-ofrenda', items: [{ id: 'p1', type: 'photo', x: 50, y: 24 }] }, { fromCache: false, hasPendingWrites: false }), 0); return () => {}; },
+      save: (id, state) => { window.__saves.push(JSON.parse(JSON.stringify(state))); return reply(window.__saves.length, state); },
+    };
+    document.body.insertAdjacentHTML('beforeend', '<digital-ofrenda id="t" mode="edit"></digital-ofrenda>');
+  }, replyJs);
+  const el = page.locator('digital-ofrenda#t');
+  await until(async () => (await el.locator('.item.photo').count()) === 1);
+  return { ctx, page, el };
+}
+const savedPhotoSrc = (page, n) => page.evaluate(n => (window.__saves[n].items.find(i => i.type === 'photo') || {}).src, n);
+const heldPhotoSrc = el => el.evaluate(e => e._state.items.find(i => i.type === 'photo').src);
+
+test('shared photos: when the server answers with a path, the page holds the path and later saves stop re-sending the image', async () => {
+  const { ctx, page, el } = await sharedAltar(`(n) => Promise.resolve(n === 1 ? { ok: true, photos: { p1: '${PATH_A}' } } : { ok: true })`);
+  await el.locator('.photo-input').setInputFiles(tmpFile('a.png', PNG));
+  await until(async () => (await page.evaluate(() => window.__saves.length)) === 1);
+  assert.match(await savedPhotoSrc(page, 0), /^data:image\/jpeg;base64,/, 'the first save carries the new image');
+  await until(async () => (await heldPhotoSrc(el)) === PATH_A);
+  // Any other change: the photo now goes as its short path.
+  await el.locator('.tray button[data-type="heart"]').click();
+  await until(async () => (await page.evaluate(() => window.__saves.length)) === 2);
+  assert.equal(await savedPhotoSrc(page, 1), PATH_A, 'the path, not the whole image again');
+  await new Promise(r => setTimeout(r, 400));
+  assert.equal(await el.locator('.item').count(), 2, 'the server\'s copy was recognised as ours, so nothing was replaced or re-drawn');
+  await ctx.close();
+});
+
+test('shared photos: a photo changed while its save is in flight keeps the newer image', async () => {
+  const { ctx, page, el } = await sharedAltar(`(n) => new Promise(resolve => { window.__release.push(resolve); })`);
+  await el.locator('.photo-input').setInputFiles(tmpFile('a.png', PNG));
+  await until(async () => (await page.evaluate(() => window.__saves.length)) === 1);
+  const first = await savedPhotoSrc(page, 0);
+  // Replace the photo while save 1 is still unanswered. (Clicking the frame sets this target; a real click would open the
+  // file picker, which is covered elsewhere, so the target is set directly and the file goes straight to the input.)
+  await el.evaluate(e => { e._photoTarget = e._state.items.find(i => i.type === 'photo'); });
+  await el.locator('.photo-input').setInputFiles(tmpFile('b.png', solidPng(4, 4, 255, 0, 0)));
+  await until(async () => (await heldPhotoSrc(el)) !== first);
+  const newer = await heldPhotoSrc(el);
+  await page.evaluate(path => window.__release[0]({ ok: true, photos: { p1: path } }), PATH_A); // save 1 answers late, about the OLD image
+  await until(async () => (await page.evaluate(() => window.__saves.length)) === 2);
+  assert.equal(await heldPhotoSrc(el), newer, 'the old path did not replace the newer picture');
+  assert.equal(await savedPhotoSrc(page, 1), newer, 'and the next save carries the newer image');
+  await page.evaluate(path => window.__release[1]({ ok: true, photos: { p1: path } }), PATH_B);
+  await until(async () => (await heldPhotoSrc(el)) === PATH_B);
+  await ctx.close();
+});
+
+test('shared photos: a photo path from the server is accepted only in its exact shape; nothing looser reaches the page', async () => {
+  const ctx = await h.browser.newContext();
+  const page = await ctx.newPage();
+  page.on('pageerror', e => h.errors.push(e.message));
+  await page.goto(require('./helpers').url('tests/blank.html'));
+  const H = 'c'.repeat(64);
+  const sources = [`/ofrendas/t/photos/${H}`, `https://evil.example/x.png`, `//evil.example/ofrendas/t/photos/${H}`, `/ofrendas/t/photos/${H}/x`, `/ofrendas/t/photos/${H.toUpperCase()}`, '/ofrendas/t/photos/short', 'javascript:alert(1)', '/other/path.png'];
+  await page.evaluate(srcs => {
+    customElements.get('digital-ofrenda').storage = {
+      canWrite: false,
+      subscribe: (id, onState) => { setTimeout(() => onState({ format: 'digital-ofrenda', items: srcs.map((src, i) => ({ id: 'p' + i, type: 'photo', x: 10 + i * 10, y: 30, src })) }, { fromCache: false, hasPendingWrites: false }), 0); return () => {}; },
+      save: async () => {},
+    };
+    document.body.insertAdjacentHTML('beforeend', '<digital-ofrenda id="t" mode="view"></digital-ofrenda>');
+  }, sources);
+  const el = page.locator('digital-ofrenda#t');
+  await until(async () => (await el.locator('.item.photo').count()) === sources.length);
+  assert.deepEqual(await el.locator('.item.photo img').evaluateAll(imgs => imgs.map(i => i.getAttribute('src'))), [sources[0]], 'one image: the exact path');
+  await ctx.close();
+});

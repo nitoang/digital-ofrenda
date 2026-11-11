@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { d1 } = require('./d1');
+const { fakeR2 } = require('./r2');
 
 const ROOT = path.resolve(__dirname, '..');
 const SITE = path.join(ROOT, 'site');
@@ -68,14 +69,15 @@ function selfSigned() {
 
 const STRIPE_ENV = { STRIPE_SECRET_KEY: 'sk_test_x', STRIPE_PRICE_EXTRA_PHOTOS: 'price_photos', STRIPE_PRICE_SEVEN_TIERS: 'price_tiers', STRIPE_PRICE_PLATINUM: 'price_platinum' };
 
-// tls: true serves https with a throwaway certificate (browsers must ignore certificate errors). stripe: true makes purchases available, answered by a stand-in for Stripe that records what it was asked.
-async function startSite({ env: envOver = {}, port = 0, onMail, stripe = false, tls = false } = {}) {
+// photos: true (the default) gives the Worker an in-memory photo bucket (R2), the way a real deployment keeps photos;
+// false leaves photos inline in the database. tls: true serves https with a throwaway certificate (browsers must ignore certificate errors). stripe: true makes purchases available, answered by a stand-in for Stripe that records what it was asked.
+async function startSite({ env: envOver = {}, port = 0, onMail, stripe = false, tls = false, photos = true } = {}) {
   const w = await import('../server/worker.mjs');
   const store = await import('../server/store.mjs');
   const { RULES } = await import('../server/rules.mjs');
   const sent = [];
   let offset = 0;
-  const env = { DB: d1(), APP_URL: 'http://localhost', TURNSTILE_DISABLED: '1', STRIPE_WEBHOOK_SECRET: 'whsec_test', ...(stripe ? STRIPE_ENV : {}), ...envOver };
+  const env = { DB: d1(), ...(photos ? { PHOTOS: fakeR2() } : {}), APP_URL: 'http://localhost', TURNSTILE_DISABLED: '1', STRIPE_WEBHOOK_SECRET: 'whsec_test', ...(stripe ? STRIPE_ENV : {}), ...envOver };
   const stripeCalls = [];
   const fakeFetch = async (url, init) => {
     if (!String(url).startsWith('https://api.stripe.com/')) return fetch(url, init);

@@ -29,6 +29,10 @@ const FORMAT = 'digital-ofrenda';
 const KINDS = ['person', 'pet', 'mixed'];
 const DEFAULT_NOTE = 'Siempre en nuestro corazón';
 const IMAGE_RE = /^data:image\/(jpeg|png|webp|gif);base64,([A-Za-z0-9+/]+={0,2})$/;
+const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export const PHOTO_PATH_RE = /^\/ofrendas\/([A-Za-z0-9_-]{1,64})\/photos\/([a-f0-9]{64})$/;
+// Where a stored photo is served from. The hash is of the image bytes, so one image is stored once per ofrenda.
+export const photoPath = (altarId, hash) => `/ofrendas/${altarId}/photos/${hash}`;
 
 const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
 const num = (v, lo, hi, d) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d);
@@ -48,6 +52,14 @@ function looksLikeImage(type, b64) {
   }
 }
 
+// A photo already held in the photo store, named by its path. Only THIS altar's own photos are accepted, never another
+// ofrenda's: a path to someone else's photo would let a person pull a private photo into an altar they control.
+function cleanPhotoPath(v, altarId) {
+  if (typeof v !== 'string' || !altarId || !ID_RE.test(altarId)) return null;
+  const m = PHOTO_PATH_RE.exec(v);
+  return m && m[1] === altarId ? v : null;
+}
+
 function cleanImage(v, max) {
   if (typeof v !== 'string' || v.length > max + 40) return null;
   const m = IMAGE_RE.exec(v);
@@ -58,7 +70,7 @@ function cleanImage(v, max) {
 
 /**
  * @param {unknown} input  parsed JSON from the request (untrusted)
- * @param {{ entitlements?: {extraPhotos?: boolean, sevenTiers?: boolean}, previous?: object|null, limits?: Partial<typeof LIMITS> }} [opts]
+ * @param {{ entitlements?: {extraPhotos?: boolean, sevenTiers?: boolean}, previous?: object|null, limits?: Partial<typeof LIMITS>, altarId?: string }} [opts]
  *   entitlements  Which upgrades this altar has bought, from YOUR payment records, never from the request.
  *                 Only boolean `true` counts.
  *   previous      The altar currently stored (or null). Mirrors the browser rule that saved data is never
@@ -89,7 +101,8 @@ export function validateOfrenda(input, opts = {}) {
     if (CANDLES.has(raw.type)) item.lit = raw.lit === true;
     if (raw.type === 'note') item.text = str(raw.text, 80) || DEFAULT_NOTE;
     if (raw.type === 'photo' && raw.src !== undefined) {
-      const src = cleanImage(raw.src, limits.maxImageChars);
+      // An inline image, or (when altarId is given) the path of one of this altar's own stored photos.
+      const src = cleanImage(raw.src, limits.maxImageChars) || cleanPhotoPath(raw.src, opts.altarId);
       if (!src) return fail(422, 'bad_image', 'Photos must be small PNG, JPEG, WebP or GIF images.');
       item.src = src;
       photos++;

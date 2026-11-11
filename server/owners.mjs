@@ -11,6 +11,7 @@ import * as store from './store.mjs';
 import { queueMail, nowOwnerMessage, lockedMessage } from './mail.mjs';
 import { RULES } from './rules.mjs';
 import { FEATURES } from './validate.mjs';
+import { deleteAltarPhotos } from './photos.mjs';
 
 // `user` is the person stepping away ({id, plan}). Returns 'left', 'passed' or 'deleted'.
 export async function retireOwner(env, deps, altarId, user) {
@@ -21,7 +22,13 @@ export async function retireOwner(env, deps, altarId, user) {
     await store.leaveAsOwner(env.DB, altarId, user.id);
     return 'left';
   }
-  if (!others.length) { await store.deleteAltar(env.DB, altarId); return 'deleted'; }
+  if (!others.length) {
+    await store.deleteAltar(env.DB, altarId);
+    // Its photos go with it. A failure here must not undo the deletion; the ofrenda is already gone, so it is reported.
+    try { await deleteAltarPhotos(env, altarId); }
+    catch (e) { deps.alert?.('photo_cleanup_failed', `Could not delete the photos of a deleted ofrenda: ${e?.message}`); }
+    return 'deleted';
+  }
 
   const successor = await store.getSuccessor(env.DB, altarId);
   const named = successor?.accepted_user_id && others.find(m => m.user_id === successor.accepted_user_id);

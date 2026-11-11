@@ -15,6 +15,7 @@ import { RULES } from './rules.mjs';
 import { DAY } from './util.mjs';
 import { suppressing } from './mailhealth.mjs';
 import { makeAlert, heartbeat } from './alerts.mjs';
+import { migrateAltarPhotos } from './photos.mjs';
 import { finishTakeover, altarName } from './team.mjs';
 import {
   queueMail, autoClaimNoticeMessage, autoClaimSuccessorMessage, claimReminderMessage,
@@ -116,6 +117,8 @@ export async function runScheduled(env, deps) {
       if (h.expires_at <= now) await endHandover(env, deps, now, h);
       else await remindRecipients(env, deps, now, h, env.APP_URL);
     });
+    // With a photo bucket, ofrendas saved before it existed still hold photos inline: move a few more each day.
+    if (env.PHOTOS) await each(deps, await store.altarsWithInlinePhotos(env.DB, RULES.photoBackfillBatch), row => migrateAltarPhotos(env, row));
   } catch (e) {
     await recordFailure(env, deps, `the daily job stopped part-way: ${e?.message}`);
     throw e; // so Cloudflare's own cron history shows it as failed too
