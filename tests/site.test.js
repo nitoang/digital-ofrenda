@@ -9,7 +9,6 @@ const problems = []; // page errors, browser dialogs and Content-Security-Policy
 before(async () => { browser = await engine.launch(); });
 after(async () => {
   await browser.close();
-  if (teardownNoise.length) console.log(`# ${teardownNoise.length} fetch(es) cancelled by closing a page at the end of a test (not failures)`);
   assert.deepEqual(problems, [], 'no page errors, dialogs or CSP violations anywhere');
 });
 
@@ -18,19 +17,18 @@ const altar = (...items) => ({ format: 'digital-ofrenda', kind: 'person', name: 
 
 // A fresh browser (own cookies) on a fresh copy of the product.
 let tearingDown = false;
-const teardownNoise = []; // cancelled requests seen while closing pages on purpose; printed, never failing
 const opened = []; // every browser context a test opened, closed when the test ends so none pile up
 async function visitor() {
   const ctx = await browser.newContext({ viewport: { width: 1000, height: 1300 }, ignoreHTTPSErrors: true }); // the test site uses a self-signed certificate
   opened.push(ctx);
   const page = await ctx.newPage();
-  // WebKit reports a fetch that is cut off by its page being closed as an error ("... due to access control checks").
-  // Closing a page on purpose at the end of a test is not an app fault, so that one message is tolerated during
-  // teardown only. The same message while a test is running still fails, and every error says which phase it was in.
-  page.on('pageerror', e => {
-    if (tearingDown && /due to access control checks/.test(e.message)) { teardownNoise.push(e.message); return; }
-    problems.push(`pageerror (${tearingDown ? 'while closing' : 'while a test ran'}, at ${page.url()}): ${e.message}`);
-  });
+  // Every page error says when it happened (while a test ran or while its page was being closed), where, how long after
+  // the page last navigated, and which requests had failed, so an error that only one engine reports can be traced.
+  let lastNavigation = Date.now();
+  const failedRequests = [];
+  page.on('framenavigated', f => { if (f === page.mainFrame()) lastNavigation = Date.now(); });
+  page.on('requestfailed', r => failedRequests.push(`${r.method()} ${new URL(r.url()).pathname} (${r.failure()?.errorText})`));
+  page.on('pageerror', e => problems.push(`pageerror (${tearingDown ? 'while closing' : 'while a test ran'}, at ${page.url()}, ${Date.now() - lastNavigation} ms after its last navigation, failed requests: ${failedRequests.slice(-3).join(' | ') || 'none'}): ${e.name}: ${e.message} [stack: ${String(e.stack || '').split('\n').slice(0, 4).map(l => l.trim()).join(' / ')}]`));
   page.on('dialog', d => { problems.push('dialog: ' + d.message()); d.dismiss(); });
   page.on('console', m => { if (/Content Security Policy|Refused to/i.test(m.text())) problems.push('csp: ' + m.text()); });
   return { ctx, page };
@@ -140,6 +138,7 @@ withSite('the emailed sign-in link needs a button press, and its token leaves th
   await page.waitForURL(u => u.pathname === '/my');
   // The same link a second time is refused politely.
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.waitForURL(u => u.pathname === '/'); // signing out ends with a redirect to the home page; let it finish before opening the link
   await openEmailedLink(page, `${site.url}/signin#t=${token}`);
   await page.getByRole('button', { name: 'Continue to sign in' }).click();
   await page.getByRole('alert').filter({ hasText: 'expired or was already used' }).waitFor();
