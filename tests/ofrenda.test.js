@@ -110,12 +110,17 @@ test('multiple photos: fill empty frame, then add more, then replace one', async
   // Clicking a frame replaces its photo (a different image, so the data changes) without adding a frame.
   // The click and the wait are separate steps with their own limits, so a failure says which one went wrong: the
   // click could not be made (Playwright's log says why), the picker did not open, or the upgrade prompt fired instead.
-  await page.evaluate(() => { window.__up = []; document.addEventListener('upgrade-request', e => window.__up.push(e.detail.feature)); });
+  await page.evaluate(() => {
+    window.__up = []; window.__ev = [];
+    document.addEventListener('upgrade-request', e => window.__up.push(e.detail.feature));
+    for (const t of ['pointerdown', 'pointerup', 'click']) window.addEventListener(t, e => window.__ev.push(`${t} on ${e.composedPath()[0]?.className || e.target.tagName} at ${Math.round(e.clientX)},${Math.round(e.clientY)}`), true);
+  });
   const chooser = page.waitForEvent('filechooser', { timeout: 10_000 });
   chooser.catch(() => {}); // reported below, with the reason, rather than as an unhandled rejection
   await el.locator('.item.photo').first().click({ timeout: 10_000 });
   const fc = await chooser.catch(async () => {
-    throw new Error('clicking a photo frame did not open the file picker; upgrade-request events: ' + JSON.stringify(await page.evaluate(() => window.__up)));
+    const seen = await page.evaluate(() => ({ upgrades: window.__up, events: window.__ev }));
+    throw new Error('clicking a photo frame did not open the file picker; ' + JSON.stringify(seen) + '; page errors: ' + JSON.stringify(h.errors));
   });
   await fc.setFiles(tmpFile('b.png', solidPng(4, 4, 255, 0, 0)));
   await until(async () => (await photos())[0].src !== first);
