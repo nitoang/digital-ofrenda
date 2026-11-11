@@ -114,3 +114,53 @@ test('rejects non-ofrendas and oversized altars', async () => {
   assert.equal(v.validateOfrenda(many).status, 413);
   assert.equal(v.validateOfrenda(altar(frame('a', png())), { limits: { maxStateChars: 100 } }).code, 'too_large');
 });
+
+// ---------- photos kept in the photo store: the path form ----------
+const H = 'a'.repeat(64);
+
+test('photo paths: only this ofrenda\'s own path is accepted, and only when the caller says which ofrenda this is', async () => {
+  const { v } = await load();
+  const ok = v.validateOfrenda(altar(frame('a', `/ofrendas/abc123def456/photos/${H}`)), { altarId: 'abc123def456' });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.state.items[0].src, `/ofrendas/abc123def456/photos/${H}`);
+  assert.equal(v.photoPath('abc123def456', H), `/ofrendas/abc123def456/photos/${H}`, 'the one place the path is built');
+  const bad = [
+    [`/ofrendas/someoneelse01/photos/${H}`, 'another ofrenda\'s photo'],
+    [`/ofrendas/abc123def456/photos/${'A'.repeat(64)}`, 'an upper-case hash'],
+    [`/ofrendas/abc123def456/photos/${'a'.repeat(63)}`, 'a short hash'],
+    [`/ofrendas/abc123def456/photos/${H}/x`, 'extra path'],
+    [`/ofrendas/abc123def456/photos/${H}?x=1`, 'a query string'],
+    [`https://evil.example/ofrendas/abc123def456/photos/${H}`, 'a full address'],
+    [`//evil.example/ofrendas/abc123def456/photos/${H}`, 'a protocol-relative address'],
+    [`/ofrendas/abc123def456/photos/../photos/${H}`, 'a traversal'],
+    ['javascript:alert(1)', 'a script address'],
+    ['/a/b', 'any other path'],
+  ];
+  for (const [src, what] of bad) {
+    const r = v.validateOfrenda(altar(frame('a', src)), { altarId: 'abc123def456' });
+    assert.deepEqual([r.ok, r.status, r.code], [false, 422, 'bad_image'], what);
+  }
+  // Without an altar id (a caller that has no photo store) a path means nothing.
+  assert.equal(v.validateOfrenda(altar(frame('a', `/ofrendas/abc123def456/photos/${H}`))).code, 'bad_image');
+  // Bad ids never match.
+  assert.equal(v.validateOfrenda(altar(frame('a', `/ofrendas/a b/photos/${H}`)), { altarId: 'a b' }).code, 'bad_image');
+});
+
+test('photo paths count as photos for the free limit, like inline images', async () => {
+  const { v } = await load();
+  const p = n => `/ofrendas/abc123def456/photos/${n.repeat(64)}`;
+  const opts = { altarId: 'abc123def456' };
+  assert.equal(v.validateOfrenda(altar(frame('a', p('a')), frame('b', p('b'))), opts).ok, true);
+  const third = v.validateOfrenda(altar(frame('a', p('a')), frame('b', p('b')), frame('c', p('c'))), opts);
+  assert.deepEqual([third.ok, third.status, third.feature], [false, 402, 'extraPhotos']);
+  assert.equal(v.validateOfrenda(altar(frame('a', p('a')), frame('b', p('b')), frame('c', p('c'))), { ...opts, entitlements: { extraPhotos: true } }).ok, true);
+});
+
+test('the component accepts the same path shape and nothing looser', async () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'ofrenda.js'), 'utf8');
+  const server = (await load()).v.PHOTO_PATH_RE;
+  const component = new RegExp(/const PHOTO_PATH = \/(.*)\/;/.exec(src)[1]);
+  for (const s of [`/ofrendas/abc/photos/${H}`, `/ofrendas/abc/photos/${'A'.repeat(64)}`, `/ofrendas/a b/photos/${H}`, `//x/ofrendas/abc/photos/${H}`, `/ofrendas/abc/photos/${H}x`, '/ofrendas/abc/photos/', `/ofrendas/${'a'.repeat(65)}/photos/${H}`]) {
+    assert.equal(component.test(s), server.test(s), s);
+  }
+});

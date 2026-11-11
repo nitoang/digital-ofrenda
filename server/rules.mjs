@@ -29,6 +29,7 @@ export const RULES = Object.freeze({
   handoverReminders: [30 * DAY, 60 * DAY, 85 * DAY], // reminders to a person who has not signed up for a waiting handover
   alertCooldown: 6 * HOUR,             // one email to the operator per kind of problem per this long; the rest are counted
   jobMaxSilence: 36 * HOUR,            // /healthz reports the daily job late after this long without a clean run
+  photoBackfillBatch: 25,              // ofrendas per daily run whose inline photos are moved into the photo store
   jobBatch: 100,                       // rows each step of the daily job handles per run
   claimWait: 30 * DAY,                 // notice period; the owner signing in at any point cancels it
 });

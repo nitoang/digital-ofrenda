@@ -763,6 +763,91 @@ withSite('link previews: /s/<name> has the preview tags and a picture, sends a p
   await stranger.ctx.close();
 });
 
+withSite('photo store: a photo added in the browser is kept in the bucket and shown to visitors, and later saves stay small', async () => {
+  const { page } = await visitor();
+  await signIn(page, 'maria@example.com');
+  const id = await startOfrenda(page);
+  const el = page.locator('digital-ofrenda[mode="edit"]');
+  const puts = [];
+  page.on('request', r => { if (r.method() === 'PUT' && r.url().endsWith('/ofrendas/' + id)) puts.push({ size: (r.postData() || '').length, inline: (r.postData() || '').includes('data:image') }); });
+  await el.locator('.photo-input').setInputFiles(tmpFile('a.png', PNG));
+  const pathOf = () => (serverState(id)?.items || []).find(i => i.type === 'photo' && i.src)?.src;
+  await until(() => pathOf(), 'the photo saved');
+  assert.match(pathOf(), new RegExp(`^/ofrendas/${id}/photos/[a-f0-9]{64}$`), 'the server kept a path');
+  assert.equal(site.env.PHOTOS.objects.size, 1, 'and the image itself is in the bucket');
+  assert.ok(!site.db.prepare('SELECT state FROM altars WHERE id = ?').get(id).state.includes('data:image'), 'nothing inline in the database');
+
+  // Another edit: the photo goes as its short path, so the save is small.
+  await until(() => puts.length >= 1, 'first save request');
+  await page.waitForTimeout(500);
+  const before = puts.length;
+  await el.locator('.tray button[data-type="heart"]').click();
+  await until(() => puts.length > before, 'second save request');
+  assert.equal(puts[0].inline, true, 'the first save carries the new image');
+  assert.equal(puts.at(-1).inline, false, `the later save (${puts.at(-1).size} characters) carries the short path, not the image again`);
+  assert.ok(puts.slice(1).every(p => !p.inline), 'and so does every save after the first');
+
+  // After a reload the page shows it from the bucket, through the Worker, and so does a visitor.
+  await page.reload();
+  await page.locator('digital-ofrenda .item.photo img').waitFor();
+  await until(() => page.locator('digital-ofrenda .item.photo img').evaluate(i => i.complete && i.naturalWidth > 0), 'the photo loaded for the owner');
+  const visitor2 = await visitor();
+  await visitor2.page.goto(`${site.url}/a/${id}`);
+  await visitor2.page.locator('digital-ofrenda .item.photo img').waitFor();
+  await until(() => visitor2.page.locator('digital-ofrenda .item.photo img').evaluate(i => i.complete && i.naturalWidth > 0), 'the photo loaded for a visitor');
+  assert.equal(await visitor2.page.locator('digital-ofrenda .item.photo img').getAttribute('src'), pathOf());
+});
+
+withSite('photo store: Export writes the photo inline so the file stands alone, and it imports back', async () => {
+  const { page } = await visitor();
+  await signIn(page, 'maria@example.com');
+  const id = await startOfrenda(page);
+  const el = page.locator('digital-ofrenda[mode="edit"]');
+  await el.locator('.photo-input').setInputFiles(tmpFile('a.png', PNG));
+  await until(() => (serverState(id)?.items || []).some(i => i.type === 'photo' && i.src), 'the photo saved');
+  await page.reload();
+  await until(() => page.locator('digital-ofrenda .item.photo img').evaluate(i => i.complete && i.naturalWidth > 0), 'the photo loaded');
+  const [download] = await Promise.all([page.waitForEvent('download'), el.locator('.export-btn').click()]);
+  const exported = JSON.parse(require('node:fs').readFileSync(await download.path(), 'utf8'));
+  const photo = exported.items.find(i => i.type === 'photo' && i.src);
+  assert.match(photo.src, /^data:image\/jpeg;base64,/, 'inline, not a path to this server');
+  const stored = [...site.env.PHOTOS.objects.values()][0].bytes;
+  assert.deepEqual(Buffer.from(photo.src.split(',')[1], 'base64'), Buffer.from(stored), 'the very same image');
+  await page.getByText('Ofrenda exported.').waitFor();
+  // Import it into a different ofrenda: the image goes back into the bucket.
+  const other = await startOfrenda(page);
+  const otherEl = page.locator('digital-ofrenda[mode="edit"]');
+  await otherEl.locator('.import-input').setInputFiles({ name: 'x.ofrenda.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(exported)) });
+  await otherEl.locator('.import-btn').click(); // the second click confirms
+  await until(() => (serverState(other)?.items || []).some(i => i.type === 'photo' && /^\/ofrendas\/.+\/photos\//.test(i.src || '')), 'the imported photo saved as a path');
+  assert.equal(site.env.PHOTOS.objects.size, 2, 'one per ofrenda (they are never shared between ofrendas)');
+});
+
+withSite('photo store: a private ofrenda\'s photo cannot be fetched by a stranger, and deleting the ofrenda deletes it', async () => {
+  const { page } = await visitor();
+  await signIn(page, 'maria@example.com');
+  const id = await startOfrenda(page);
+  const el = page.locator('digital-ofrenda[mode="edit"]');
+  await el.locator('.photo-input').setInputFiles(tmpFile('a.png', PNG));
+  const pathOf = () => (serverState(id)?.items || []).find(i => i.type === 'photo' && i.src)?.src;
+  await until(() => pathOf(), 'the photo saved');
+  const photoUrl = site.url + pathOf();
+  const stranger = await visitor();
+  assert.equal((await stranger.page.request.get(photoUrl)).status(), 200, 'public by default');
+
+  await page.goto(`${site.url}/a/${id}/keepers`);
+  await page.getByLabel('Only the people who keep it').check();
+  await page.getByRole('button', { name: 'Save', exact: true }).first().click();
+  await page.getByText('This ofrenda is now private.').waitFor();
+  assert.equal((await stranger.page.request.get(photoUrl)).status(), 404, 'now the exact address gives a stranger nothing');
+  assert.equal((await page.request.get(photoUrl)).status(), 200, 'while the owner still sees it');
+
+  assert.equal(site.env.PHOTOS.objects.size, 1);
+  const gone = await page.evaluate(id => fetch('/ofrendas/' + id, { method: 'DELETE' }).then(r => r.status), id);
+  assert.equal(gone, 200);
+  assert.equal(site.env.PHOTOS.objects.size, 0, 'the photo went with the ofrenda');
+});
+
 withSite('names: the owner picks a name and /a/<name> opens the same ofrenda, with the id link still working', async () => {
   const { page } = await visitor();
   await signIn(page, 'maria@example.com');

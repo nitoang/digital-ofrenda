@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { solidPng } = require('./helpers');
 const { d1 } = require('./d1');
+const { fakeR2 } = require('./r2');
 
 console.error = () => {}; // the Worker logs server-side problems; keep test output readable
 
@@ -2330,4 +2331,246 @@ test('link previews: need DB and a valid APP_URL, and the preview page is not an
     const html = await (await ok.call('GET', `/s/${ref}`)).text();
     assert.ok(!/url=\/\/|url=[a-z]+:/i.test(html), ref);
   }
+});
+
+// ---------- photos kept in the R2 photo store ----------
+const R2 = () => ({ env: { PHOTOS: fakeR2() } });
+const bigPhoto = () => 'data:image/png;base64,' + Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), crypto.randomBytes(200_000)]).toString('base64'); // ~267 KB
+const dataBytes = d => Buffer.from(d.split(',')[1], 'base64');
+const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+const photoRow = (t, id) => t.db.prepare('SELECT state FROM altars WHERE id = ?').get(id).state;
+
+test('photo store: a saved photo goes to the bucket, the state keeps a path, and the path serves the image', async () => {
+  const t = await setup(R2());
+  const owner = await t.signIn('o@example.com');
+  const id = await t.altarFor(owner);
+  const src = png(), hash = sha256(dataBytes(src)), path = `/ofrendas/${id}/photos/${hash}`;
+  const res = await owner.json('PUT', `/ofrendas/${id}`, altar(frame('x', src)));
+  assert.deepEqual(res.body, { ok: true, photos: { x: path } }, 'the reply names the path chosen, so the page can stop re-sending the image');
+  assert.deepEqual([...t.env.PHOTOS.objects.keys()], [`photos/${id}/${hash}`]);
+  assert.equal(t.env.PHOTOS.objects.get(`photos/${id}/${hash}`).httpMetadata.contentType, 'image/png');
+  assert.ok(!photoRow(t, id).includes('data:image') && photoRow(t, id).includes(path), 'the database holds the path, not the image');
+
+  assert.equal((await (await t.call('GET', `/ofrendas/${id}`)).json()).items[0].src, path);
+  const img = await t.call('GET', path);
+  assert.equal(img.status, 200);
+  assert.equal(img.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await img.arrayBuffer()), dataBytes(src), 'the very same bytes');
+  assert.equal(img.headers.get('etag'), `"${hash}"`);
+  assert.equal(img.headers.get('cache-control'), 'private, no-cache', 'checked every time, so going private cuts it off at once');
+  assert.equal(img.headers.get('x-content-type-options'), 'nosniff');
+  assert.match(img.headers.get('content-security-policy'), /sandbox/);
+  assert.equal(img.headers.get('x-robots-tag'), 'noindex, nofollow');
+  const again = await t.call('GET', path, { headers: { 'if-none-match': `"${hash}"` } });
+  assert.deepEqual([again.status, (await again.text()).length], [304, 0], 'nothing to send when nothing changed');
+});
+
+test('photo store: the same image is stored once, and saving the paths back is accepted without new uploads', async () => {
+  const t = await setup(R2());
+  const owner = await t.signIn('o@example.com');
+  const id = await t.altarFor(owner);
+  const src = png();
+  const first = await owner.json('PUT', `/ofrendas/${id}`, altar(frame('a', src), frame('b', src)));
+  assert.equal(first.status, 200);
+  assert.equal(t.env.PHOTOS.objects.size, 1, 'two frames, one stored image');
+  assert.equal(first.body.photos.a, first.body.photos.b);
+  // The page sends the paths back on its next save.
+  const stored = await (await t.call('GET', `/ofrendas/${id}`)).json();
+  const before = new Map(t.env.PHOTOS.objects);
+  const second = await owner.json('PUT', `/ofrendas/${id}`, stored);
+  assert.deepEqual(second.body, { ok: true }, 'nothing new was stored, so nothing is reported');
+  assert.deepEqual([...t.env.PHOTOS.objects.keys()], [...before.keys()]);
+});
+
+test('photo store: a path to another ofrenda, to a photo that is not there, or to anything else is refused', async () => {
+  const t = await setup(R2());
+  const a = await t.signIn('a@example.com'), b = await t.signIn('b@example.com');
+  const mine = await t.altarFor(a), theirs = await t.altarFor(b);
+  const secret = png();
+  const stolen = (await b.json('PUT', `/ofrendas/${theirs}`, altar(frame('x', secret)))).body.photos.x;
+  for (const [src, why] of [
+    [stolen, "another ofrenda's photo (it must not become reachable through an altar I control)"],
+    [`/ofrendas/${mine}/photos/${'0'.repeat(64)}`, 'a photo that was never stored'],
+    [`/ofrendas/${mine}/photos/${sha256(dataBytes(secret))}/../x`, 'a traversal'],
+    ['https://evil.example/x.png', 'a remote address'],
+    ['/ofrendas', 'some other path'],
+  ]) {
+    const r = await a.json('PUT', `/ofrendas/${mine}`, altar(frame('x', src)));
+    assert.deepEqual([r.status, r.body.error], [422, 'bad_image'], why);
+  }
+  assert.equal(t.env.PHOTOS.objects.size, 1, "nothing was copied from the other person's ofrenda");
+  assert.equal([...t.env.PHOTOS.keys?.() ?? t.env.PHOTOS.objects.keys()].every(k => k.startsWith(`photos/${theirs}/`)), true);
+});
+
+test('photo store: photos no longer used are deleted, but one still used by another frame stays', async () => {
+  const t = await setup(R2());
+  const owner = await t.signIn('o@example.com');
+  const id = await t.altarFor(owner);
+  await t.store.grantFeature(t.env.DB, id, 'extraPhotos', t.now()); // three photos at once needs the upgrade
+  const red = png(), blue = 'data:image/png;base64,' + solidPng(2, 2, 10, 10, 200).toString('base64');
+  const put = (...items) => owner.json('PUT', `/ofrendas/${id}`, altar(...items));
+  const keys = () => [...t.env.PHOTOS.objects.keys()].sort();
+  const r = await put(frame('a', red), frame('b', red), frame('c', blue));
+  assert.equal(keys().length, 2);
+  const [redPath, bluePath] = [r.body.photos.a, r.body.photos.c];
+  await put(frame('a', redPath), frame('c', bluePath)); // frame b removed: red is still used by a
+  assert.equal(keys().length, 2, 'still used, so kept');
+  await put(frame('a', redPath)); // blue no longer used
+  assert.deepEqual(keys(), [`photos/${id}/${redPath.split('/').pop()}`], 'unused photo deleted');
+  await put(frame('a'));          // red replaced by an empty frame
+  assert.equal(keys().length, 0);
+  await put(frame('a', red));     // and a replaced photo: the old image goes when a different one takes its place
+  const old = keys()[0];
+  await put(frame('a', blue));
+  assert.equal(keys().length, 1);
+  assert.notEqual(keys()[0], old);
+});
+
+test('photo store: a private ofrenda keeps its photos private, and turning it back on restores them', async () => {
+  const t = await setup(R2());
+  const owner = await t.signIn('o@example.com'), stranger = await t.signIn('s@example.com');
+  const id = await t.altarFor(owner);
+  const path = (await owner.json('PUT', `/ofrendas/${id}`, altar(frame('x', png())))).body.photos.x;
+  assert.equal((await t.call('GET', path)).status, 200, 'anyone with the link, as before');
+  await owner.json('PUT', `/ofrendas/${id}/visibility`, { visibility: 'private' });
+  const missing = await t.call('GET', `/ofrendas/${id}/photos/${'0'.repeat(64)}`);
+  for (const cookie of [undefined, stranger.cookie]) {
+    const res = await t.call('GET', path, { cookie });
+    assert.equal(res.status, 404, 'a stranger cannot fetch it, even knowing the exact address');
+    assert.deepEqual(await res.json(), await missing.clone().json(), 'and it looks like a photo that does not exist');
+  }
+  assert.equal((await owner.call('GET', path)).status, 200);
+  assert.equal((await t.call('GET', path, { headers: { 'if-none-match': `"${path.split('/').pop()}"` } })).status, 404, 'a cached copy cannot be revalidated by a stranger either');
+  await owner.json('PUT', `/ofrendas/${id}/visibility`, { visibility: 'link' });
+  assert.equal((await t.call('GET', path)).status, 200);
+});
+
+test('photo store: deleting an ofrenda or an account deletes its photos, and only its own', async () => {
+  const t = await setup(R2());
+  const a = await t.signIn('a@example.com'), b = await t.signIn('b@example.com');
+  const one = await t.altarFor(a), two = await t.altarFor(a), other = await t.altarFor(b);
+  const blue = 'data:image/png;base64,' + solidPng(2, 2, 10, 10, 200).toString('base64');
+  await a.json('PUT', `/ofrendas/${one}`, altar(frame('x', png()), frame('y', blue)));
+  await a.json('PUT', `/ofrendas/${two}`, altar(frame('x', png())));
+  await b.json('PUT', `/ofrendas/${other}`, altar(frame('x', png())));
+  const count = id => [...t.env.PHOTOS.objects.keys()].filter(k => k.startsWith(`photos/${id}/`)).length;
+  assert.deepEqual([count(one), count(two), count(other)], [2, 1, 1]);
+  assert.equal((await a.call('DELETE', `/ofrendas/${one}`)).status, 200);
+  assert.deepEqual([count(one), count(two), count(other)], [0, 1, 1], 'only that ofrenda\'s photos went');
+  const del = await a.json('DELETE', '/me', { email: 'a@example.com', deleteOfrendas: true });
+  assert.equal(del.status, 200);
+  assert.deepEqual([count(two), count(other)], [0, 1], "an account's photos go with its ofrendas; other people's stay");
+});
+
+test('photo store: an ofrenda can hold far more than the old 1.5 MB, because the database row stays small', async () => {
+  const t = await setup(R2());
+  const owner = await t.signIn('o@example.com');
+  const id = await t.altarFor(owner);
+  await t.store.grantFeature(t.env.DB, id, 'extraPhotos', t.now());
+  let items = [];
+  for (let round = 0; round < 4; round++) {
+    const fresh = [frame(`p${round}a`, bigPhoto()), frame(`p${round}b`, bigPhoto())];
+    const r = await owner.json('PUT', `/ofrendas/${id}`, altar(...items, ...fresh));
+    assert.equal(r.status, 200, `save ${round + 1}`);
+    items = (await (await t.call('GET', `/ofrendas/${id}`)).json()).items; // the paths, as the page now holds them
+  }
+  const stored = [...t.env.PHOTOS.objects.values()].reduce((n, o) => n + o.bytes.length, 0);
+  assert.equal(t.env.PHOTOS.objects.size, 8);
+  assert.ok(stored > 1_500_000, `${stored} bytes of photos, past the old cap`);
+  assert.ok(photoRow(t, id).length < 4000, `the row is ${photoRow(t, id).length} characters`);
+});
+
+test('photo store: each photo is still limited in size and must really be an image', async () => {
+  const t = await setup(R2());
+  const owner = await t.signIn('o@example.com');
+  const id = await t.altarFor(owner);
+  const tooBig = 'data:image/png;base64,' + Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), crypto.randomBytes(320_000)]).toString('base64');
+  assert.equal((await owner.json('PUT', `/ofrendas/${id}`, altar(frame('x', tooBig)))).body.error, 'bad_image');
+  const fake = 'data:image/png;base64,' + Buffer.from('<svg onload=alert(1)>').toString('base64');
+  assert.equal((await owner.json('PUT', `/ofrendas/${id}`, altar(frame('x', fake)))).body.error, 'bad_image');
+  assert.equal(t.env.PHOTOS.objects.size, 0, 'nothing refused was stored');
+});
+
+test('photo store: without a bucket nothing changes: photos stay inline, and a path or the photo route is refused', async () => {
+  const t = await setup();
+  const owner = await t.signIn('o@example.com');
+  const id = await t.altarFor(owner);
+  const src = png();
+  assert.deepEqual((await owner.json('PUT', `/ofrendas/${id}`, altar(frame('x', src)))).body, { ok: true });
+  assert.equal((await (await t.call('GET', `/ofrendas/${id}`)).json()).items[0].src, src, 'inline, as before');
+  const path = `/ofrendas/${id}/photos/${sha256(dataBytes(src))}`;
+  assert.equal((await owner.json('PUT', `/ofrendas/${id}`, altar(frame('x', path)))).body.error, 'bad_image');
+  assert.equal((await t.call('GET', path)).status, 404);
+});
+
+test('photo store: the account export puts photos back inline, byte for byte, and never leaks a path to the server', async () => {
+  const t = await setup(R2());
+  const owner = await t.signIn('o@example.com');
+  const id = await t.altarFor(owner);
+  const src = png();
+  await owner.json('PUT', `/ofrendas/${id}`, altar(frame('x', src)));
+  const text = await (await owner.call('GET', '/me/export')).text();
+  const [exported] = JSON.parse(text).ofrendas;
+  assert.equal(exported.state.items[0].src, src, 'exactly the image that was saved');
+  assert.ok(!text.includes('/photos/'), 'no path into the photo store');
+  // A photo that has gone missing leaves an empty frame rather than failing the whole export.
+  t.env.PHOTOS.objects.clear();
+  const res = await owner.call('GET', '/me/export');
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).ofrendas[0].state.items[0].src, undefined);
+});
+
+test('photo store: the daily job moves photos saved inline into the bucket, a few at a time, without counting as an edit', async () => {
+  const t = await setup(); // no bucket yet: photos are saved inline, as on an older deployment
+  const owner = await t.signIn('o@example.com');
+  const id = await t.altarFor(owner);
+  const src = png();
+  await owner.json('PUT', `/ofrendas/${id}`, altar(frame('x', src), frame('y')));
+  const before = t.db.prepare('SELECT state, updated_at FROM altars WHERE id = ?').get(id);
+  assert.ok(before.state.includes('data:image'));
+  // Many more such ofrendas than one run handles.
+  const total = t.RULES.photoBackfillBatch + 3;
+  for (let i = 0; i < total - 1; i++) t.db.prepare('INSERT INTO altars (id, state, created_at, updated_at) VALUES (?, ?, 1, ?)').run(`aaaaaaaaaa${String(i).padStart(2, '0')}`, JSON.stringify(altar(frame('x', src))), 10 + i);
+  const inline = () => t.db.prepare("SELECT COUNT(*) n FROM altars WHERE state LIKE '%data:image%'").get().n;
+  assert.equal(inline(), total);
+
+  t.env.PHOTOS = fakeR2(); // the bucket is switched on
+  await t.runJob();
+  assert.equal(inline(), 3, 'one run moves one batch');
+  await t.runJob();
+  assert.equal(inline(), 0, 'the next finishes the rest');
+  const after = t.db.prepare('SELECT state, updated_at FROM altars WHERE id = ?').get(id);
+  assert.equal(after.updated_at, before.updated_at, 'moving a photo is not an edit');
+  const hash = sha256(dataBytes(src));
+  assert.equal(JSON.parse(after.state).items[0].src, `/ofrendas/${id}/photos/${hash}`);
+  assert.deepEqual(JSON.parse(after.state).items[1], JSON.parse(before.state).items[1], 'the empty frame is untouched');
+  assert.ok(t.env.PHOTOS.objects.has(`photos/${id}/${hash}`));
+  const img = await t.call('GET', `/ofrendas/${id}/photos/${hash}`);
+  assert.deepEqual([img.status, Buffer.from(await img.arrayBuffer())], [200, dataBytes(src)], 'and it is served');
+  await t.runJob(); // nothing left: harmless
+  assert.equal((await (await t.call('GET', '/healthz', { origin: null })).json()).dailyJob.status, 'ok');
+});
+
+test('photo store: the move never overwrites a save made while it was reading, and one bad row does not stop the rest', async () => {
+  const t = await setup();
+  const src = png(), other = 'data:image/png;base64,' + solidPng(2, 2, 10, 10, 200).toString('base64');
+  const row = (id, state) => t.db.prepare('INSERT INTO altars (id, state, created_at, updated_at) VALUES (?, ?, 1, 1)').run(id, state);
+  row('aaaaaaaaaaa1', JSON.stringify(altar(frame('x', src))));
+  // The row changed after the job read it: the compare-and-set refuses.
+  const read = t.db.prepare('SELECT id, state FROM altars WHERE id = ?').get('aaaaaaaaaaa1');
+  t.db.prepare('UPDATE altars SET state = ? WHERE id = ?').run(JSON.stringify(altar(frame('x', other))), 'aaaaaaaaaaa1');
+  assert.equal(await t.store.replaceState(t.env.DB, 'aaaaaaaaaaa1', read.state, 'overwritten'), false);
+  assert.ok(t.db.prepare('SELECT state FROM altars WHERE id = ?').get('aaaaaaaaaaa1').state.includes(other.slice(0, 40)), 'the newer save is intact');
+
+  // A row the bucket cannot take is reported and the others still move.
+  t.env.PHOTOS = fakeR2();
+  row('aaaaaaaaaaa2', JSON.stringify(altar(frame('x', src))));
+  row('aaaaaaaaaaa3', JSON.stringify(altar(frame('x', src))));
+  const put = t.env.PHOTOS.put.bind(t.env.PHOTOS);
+  t.env.PHOTOS.put = async (key, ...rest) => { if (key.startsWith('photos/aaaaaaaaaaa2/')) throw new Error('bucket unavailable'); return put(key, ...rest); };
+  await t.runJob();
+  const stored = id => t.db.prepare('SELECT state FROM altars WHERE id = ?').get(id).state;
+  assert.ok(stored('aaaaaaaaaaa2').includes('data:image'), 'the failed one is left as it was, safe');
+  assert.ok(!stored('aaaaaaaaaaa3').includes('data:image'), 'the next one moved');
+  assert.equal((await (await t.call('GET', '/healthz', { origin: null })).json()).dailyJob.status, 'failed', 'and the failure is visible');
 });

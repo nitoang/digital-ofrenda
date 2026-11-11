@@ -8,6 +8,13 @@ database_name = "digital-ofrenda"
 database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 migrations_dir = "migrations"   # npx wrangler d1 migrations apply digital-ofrenda
 
+# Where photos are kept (server/photos.mjs). Optional: without it photos stay inline in D1, which holds a whole ofrenda
+# to about five photos. Create it with:  npx wrangler r2 bucket create digital-ofrenda-photos
+# Ofrendas saved before this was bound are moved over by the daily job, a few a day.
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "digital-ofrenda-photos"
+
 # A Worker you write for your email provider: it accepts POST /send with { to, subject, text }.
 [[services]]
 binding = "MAILER"

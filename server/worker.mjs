@@ -3,6 +3,7 @@
 //
 // Bindings (see wrangler.example.toml):
 //   DB                      D1 database; schema in migrations/
+//   PHOTOS                  R2 bucket for photos (optional: without it, photos stay inline in D1). See photos.mjs.
 //   MAILER                  service binding to a Worker that sends email (see mail.mjs)
 //   APP_URL                 your site, e.g. "https://ofrenda.example.com". Serve the page and this Worker from
 //                           this same origin: sign-in uses a cookie, and there is deliberately no CORS.
@@ -26,6 +27,7 @@
 //   POST /me/email {email} | POST /me/email/confirm {code} change my email, proved with a code sent to the new one
 //   POST /ofrendas                                         create one (free accounts: RULES.freeAltars)
 //   GET  /ofrendas/:id                                     public view
+//   GET  /ofrendas/:id/photos/:hash                        a stored photo (needs the PHOTOS R2 bucket; see photos.mjs); private ofrendas keep theirs private
 //   GET  /ofrendas/by-name/:name                           which ofrenda a vanity name points to -> {id, slug}
 //   POST /ofrendas/:id/visit                               a signed-in person opened it: counted once a day, never for owners (204)
 //   PUT  /ofrendas/:id/slug {slug}                         the owner picks a vanity name (/a/abuela-rosa)
@@ -62,6 +64,7 @@ import { handleExport } from './export.mjs';
 import { handleResendWebhook, suppressing } from './mailhealth.mjs';
 import { makeAlert, routeShape, handleHealth } from './alerts.mjs';
 import { handlePreview } from './preview.mjs';
+import { handleGetPhoto } from './photos.mjs';
 import { handleStripe } from './billing.mjs';
 import { handleCheckout } from './checkout.mjs';
 
@@ -104,6 +107,7 @@ const ROUTES = [
   ['DELETE', new RegExp(`^/ofrendas/${ID}/claim$`), team.handleCancelClaim],
   ['POST', new RegExp(`^/ofrendas/${ID}/claim/complete$`), team.handleCompleteClaim],
 ];
+const PHOTO_GET = new RegExp(`^/ofrendas/${ID}/photos/([a-f0-9]{64})$`);
 const PUBLIC_GET = new RegExp(`^/ofrendas/${ID}$`);
 const PREVIEW = /^\/s\/([A-Za-z0-9_-]{1,64})$/;
 const BY_NAME = /^\/ofrendas\/by-name\/([a-z0-9-]{1,64})$/;
@@ -129,6 +133,11 @@ async function route(request, env, deps) {
   if (pathname === '/healthz' && method === 'GET') return handleHealth(env, deps, env.DB ? configProblem(env, deps) : 'DB');
 
   if (method === 'GET' && BY_NAME.test(pathname)) return env.DB ? altars.handleByName(request, env, deps, BY_NAME.exec(pathname)[1]) : misconfigured('DB');
+
+  if (method === 'GET' && PHOTO_GET.test(pathname)) {
+    const [, altarId, hash] = PHOTO_GET.exec(pathname);
+    return env.DB ? handleGetPhoto(request, env, deps, altarId, hash) : misconfigured('DB');
+  }
 
   if (method === 'GET' && PUBLIC_GET.test(pathname)) {
     return env.DB ? altars.handleGet(request, env, deps, PUBLIC_GET.exec(pathname)[1]) : misconfigured('DB');
