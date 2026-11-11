@@ -10,6 +10,7 @@
 //   TURNSTILE_SECRET        Cloudflare Turnstile secret; sign-in refuses requests without a valid token.
 //                           Set TURNSTILE_DISABLED="1" instead ONLY for local development.
 //   STRIPE_WEBHOOK_SECRET   whsec_... from Stripe
+//   ALERT_EMAIL / HEARTBEAT_URL  where problems are emailed, and a dead man's switch the daily job pings (see alerts.mjs)
 //   RESEND_WEBHOOK_SECRET   whsec_... from Resend's webhook page (bounces and complaints; see mailhealth.mjs)
 //   STRIPE_SECRET_KEY       sk_... from Stripe; STRIPE_PRICE_EXTRA_PHOTOS, STRIPE_PRICE_SEVEN_TIERS and
 //                           STRIPE_PRICE_PLATINUM are the ids (price_...) of one-time Prices you create in Stripe
@@ -28,6 +29,8 @@
 //   GET  /ofrendas/by-name/:name                           which ofrenda a vanity name points to -> {id, slug}
 //   POST /ofrendas/:id/visit                               a signed-in person opened it: counted once a day, never for owners (204)
 //   PUT  /ofrendas/:id/slug {slug}                         the owner picks a vanity name (/a/abuela-rosa)
+//   PUT  /ofrendas/:id/visibility {visibility: "link"|"private"}   anyone with the link, or only the people who keep it
+//   GET  /s/:ref                                           the link to paste into chats: a preview page that sends people on to /a/:ref (see preview.mjs)
 //   PUT  /ofrendas/:id | DELETE /ofrendas/:id              save (limits enforced) | delete (owner)
 //   GET  /ofrendas/:id/team                                members; the owner also sees invites, successor, claim
 //   POST /ofrendas/:id/share {email, access: "view"|"edit", note?}   owner shares: view only (emails the link) or view and edit (a co-keeper invitation)
@@ -41,6 +44,7 @@
 //   POST /ofrendas/:id/claim | DELETE /ofrendas/:id/claim | POST /ofrendas/:id/claim/complete
 //   POST /checkout {feature, altarId?}                     -> {url}  start a purchase (see checkout.mjs)
 //   POST /stripe/webhook                                   unlocks upgrades after payment (see billing.mjs)
+//   GET  /healthz                                          for an uptime monitor: 200 when healthy, 503 when not (see alerts.mjs)
 //   POST /resend/webhook                                   bounces and spam complaints from the email provider (see mailhealth.mjs)
 //
 // Rate limiting by IP belongs at the edge: add Cloudflare rate-limiting rules for POST /auth/start,
@@ -56,6 +60,8 @@ import { runScheduled } from './scheduled.mjs';
 import * as account from './account.mjs';
 import { handleExport } from './export.mjs';
 import { handleResendWebhook, suppressing } from './mailhealth.mjs';
+import { makeAlert, routeShape, handleHealth } from './alerts.mjs';
+import { handlePreview } from './preview.mjs';
 import { handleStripe } from './billing.mjs';
 import { handleCheckout } from './checkout.mjs';
 
@@ -81,6 +87,7 @@ const ROUTES = [
   ['PUT', new RegExp(`^/ofrendas/${ID}$`), altars.handleSave],
   ['DELETE', new RegExp(`^/ofrendas/${ID}$`), altars.handleDelete],
   ['PUT', new RegExp(`^/ofrendas/${ID}/slug$`), altars.handleSetSlug],
+  ['PUT', new RegExp(`^/ofrendas/${ID}/visibility$`), altars.handleSetVisibility],
   ['GET', new RegExp(`^/ofrendas/${ID}/team$`), team.handleTeam],
   ['POST', new RegExp(`^/ofrendas/${ID}/share$`), team.handleShare],
   ['POST', new RegExp(`^/ofrendas/${ID}/invites$`), team.handleInvite],
@@ -98,6 +105,7 @@ const ROUTES = [
   ['POST', new RegExp(`^/ofrendas/${ID}/claim/complete$`), team.handleCompleteClaim],
 ];
 const PUBLIC_GET = new RegExp(`^/ofrendas/${ID}$`);
+const PREVIEW = /^\/s\/([A-Za-z0-9_-]{1,64})$/;
 const BY_NAME = /^\/ofrendas\/by-name\/([a-z0-9-]{1,64})$/;
 
 const misconfigured = what => { console.error('digital-ofrenda worker is missing configuration: ' + what); return json({ error: 'misconfigured' }, 500); };
@@ -117,11 +125,13 @@ async function route(request, env, deps) {
 
   if (pathname === '/stripe/webhook' && method === 'POST') return env.DB ? handleStripe(request, env, deps) : misconfigured('DB');
   if (pathname === '/resend/webhook' && method === 'POST') return handleResendWebhook(request, env, deps);
+  if (method === 'GET' && PREVIEW.test(pathname)) return env.DB && appUrlOk(env) ? handlePreview(request, env, deps, PREVIEW.exec(pathname)[1]) : misconfigured('DB or APP_URL');
+  if (pathname === '/healthz' && method === 'GET') return handleHealth(env, deps, env.DB ? configProblem(env, deps) : 'DB');
 
-  if (method === 'GET' && BY_NAME.test(pathname)) return env.DB ? altars.handleByName(env, BY_NAME.exec(pathname)[1]) : misconfigured('DB');
+  if (method === 'GET' && BY_NAME.test(pathname)) return env.DB ? altars.handleByName(request, env, deps, BY_NAME.exec(pathname)[1]) : misconfigured('DB');
 
   if (method === 'GET' && PUBLIC_GET.test(pathname)) {
-    return env.DB ? altars.handleGet(env, PUBLIC_GET.exec(pathname)[1]) : misconfigured('DB');
+    return env.DB ? altars.handleGet(request, env, deps, PUBLIC_GET.exec(pathname)[1]) : misconfigured('DB');
   }
 
   const problem = configProblem(env, deps);
@@ -145,11 +155,13 @@ async function route(request, env, deps) {
 export const createHandler = (deps = {}) => async (request, env) => {
   const d = { now: Date.now, fetch: globalThis.fetch.bind(globalThis), defer: p => p, mailer: mailerFromEnv(env), ...deps };
   d.mailer = suppressing(d.mailer, env.DB); // addresses that bounced or complained are skipped
+  d.alert ??= makeAlert(env, d);            // problems worth waking the operator for (see alerts.mjs)
   let res;
   try {
     res = await route(request, env, d);
   } catch (e) {
     console.error('unhandled error:', e?.stack || e);
+    d.alert('server_error', `${request.method} ${routeShape(new URL(request.url).pathname)}: ${e?.message}`);
     res = json({ error: 'server_error' }, 500);
   }
   res.headers.set('x-content-type-options', 'nosniff');

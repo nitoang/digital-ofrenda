@@ -1,5 +1,13 @@
 // Shared setup for the browser tests. Pages are loaded straight from disk (no server needed).
-const { chromium } = require('playwright');
+const playwright = require('playwright');
+
+// Which browser engine the browser tests drive: BROWSER=chromium (default), firefox or webkit. CI runs all three.
+const BROWSER = process.env.BROWSER || 'chromium';
+if (!['chromium', 'firefox', 'webkit'].includes(BROWSER)) throw new Error(`BROWSER must be chromium, firefox or webkit, not "${BROWSER}"`);
+const engine = playwright[BROWSER];
+// Real touch events (swipe-to-scroll, drag handles with a finger) are sent through the Chrome DevTools Protocol,
+// which only Chromium has. Firefox cannot emulate a phone at all, and WebKit has no way to send touch moves.
+const TOUCH_SKIP = BROWSER !== 'chromium' && 'real touch events need the Chrome DevTools Protocol (Chromium only)';
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -28,7 +36,7 @@ function solidPng(w, h, r, g, b) {
 }
 
 async function launch() {
-  const browser = await chromium.launch();
+  const browser = await engine.launch();
   const errors = [];
   // Opens a page with a single empty edit-mode altar so localStorage state never leaks between tests.
   async function altar({ attrs = '', features, state, touch = false } = {}) {
@@ -58,4 +66,4 @@ function tmpFile(name, contents) {
   return p;
 }
 
-module.exports = { launch, url, PNG, tmpFile, solidPng };
+module.exports = { launch, url, PNG, tmpFile, solidPng, BROWSER, engine, TOUCH_SKIP };

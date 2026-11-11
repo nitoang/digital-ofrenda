@@ -80,6 +80,9 @@
   const PHOTO_MAX_PX = 480;
   const FREE_PHOTOS = 2;
   const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
+  // Pointer capture keeps a drag going when the pointer leaves the item, but it is only a convenience: it throws
+  // (NotFoundError) when the browser does not count that pointer as active, and that must never abort the gesture.
+  const capturePointer = (target, pointerId) => { try { target.setPointerCapture(pointerId); } catch { /* the gesture works without it */ } };
   const uid = () => Math.random().toString(36).slice(2, 10);
   const FORMAT = 'digital-ofrenda', VERSION = 1;
   const MAX_ITEMS = 200;
@@ -711,7 +714,7 @@
       const d0 = Math.hypot(e.clientX - cx, e.clientY - cy) || 1;
       const a0 = Math.atan2(e.clientY - cy, e.clientX - cx);
       const scale0 = item.scale ?? 1, rot0 = item.rot ?? 0;
-      hd.setPointerCapture(e.pointerId);
+      capturePointer(hd, e.pointerId);
       el.classList.add('adjusting');
 
       const move = ev => {
@@ -749,7 +752,7 @@
       const offY = item.y - (sy - r0.top) / r0.height * 100;
       const slop = e.pointerType === 'touch' ? TOUCH_SLOP : 4; // fingers wobble more than mice
       let moved = false;
-      el.setPointerCapture(e.pointerId);
+      capturePointer(el, e.pointerId);
 
       const move = ev => {
         if (!edit) return;

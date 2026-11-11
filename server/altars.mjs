@@ -24,12 +24,33 @@ export async function handleCreate(request, env, deps) {
   return json({ error: 'try_again' }, 503);
 }
 
-// Public: anyone with the link can view. Returns only the altar, never who keeps it.
-export async function handleGet(env, id) {
+// Anyone with the link can view, unless the owner made it private: then only the people who keep it can. A private
+// ofrenda answers a stranger exactly as a missing one does, so nothing says it exists. Returns only the altar, never
+// who keeps it. Search engines are asked to skip it (it is a memorial, not a web page to be indexed).
+const ROBOTS = 'noindex, nofollow';
+export async function canView(request, env, deps, altar) {
+  if (altar.visibility !== 'private') return true;
+  const s = await sessionFrom(request, env, deps);
+  return !!s && !!(await store.getRole(env.DB, altar.id, s.user.id));
+}
+
+export async function handleGet(request, env, deps, id) {
   const altar = await store.getAltar(env.DB, id);
-  return altar?.state
-    ? new Response(altar.state, { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } })
-    : json({ error: 'not_found' }, 404);
+  if (!altar?.state || !(await canView(request, env, deps, altar))) return json({ error: 'not_found' }, 404, { 'x-robots-tag': ROBOTS });
+  return new Response(altar.state, { headers: { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-robots-tag': ROBOTS } });
+}
+
+// The owner chooses who can open it. Private takes effect at once and covers every link ever shared (the address
+// itself is the link, so turning it back on brings the same links back).
+export async function handleSetVisibility(request, env, deps, id) {
+  const s = await requireUser(request, env, deps);
+  if (isResponse(s)) return s;
+  if ((await store.getRole(env.DB, id, s.user.id)) !== 'owner') return json({ error: 'forbidden' }, 403);
+  const body = await readJson(request);
+  if (isResponse(body)) return body;
+  if (body.visibility !== 'link' && body.visibility !== 'private') return json({ error: 'bad_visibility', message: 'Choose anyone with the link, or private.' }, 400);
+  await store.setVisibility(env.DB, id, body.visibility);
+  return json({ visibility: body.visibility });
 }
 
 export async function handleSave(request, env, deps, id) {
@@ -63,11 +84,14 @@ export async function handleDelete(request, env, deps, id) {
   return json({ ok: true, outcome: await retireOwner(env, deps, id, s.user) });
 }
 
-// Public: which ofrenda does this vanity name point to? Anyone with the name can already view it, so this says nothing new.
-export async function handleByName(env, name) {
+// Public: which ofrenda does this vanity name point to? Anyone with the name can already view it, so this says nothing
+// new. A private ofrenda's name answers like an unused one.
+export async function handleByName(request, env, deps, name) {
   const slug = normalizeSlug(name);
   const id = slug && (await store.altarIdForSlug(env.DB, slug));
-  return id ? json({ id, slug: await store.currentSlug(env.DB, id) }, 200, { 'cache-control': 'no-store' }) : json({ error: 'not_found' }, 404);
+  const altar = id && (await store.getAltar(env.DB, id));
+  return altar && (await canView(request, env, deps, altar))
+    ? json({ id, slug: await store.currentSlug(env.DB, id) }, 200, { 'cache-control': 'no-store' }) : json({ error: 'not_found' }, 404);
 }
 
 // The owner picks the name. It is only an extra address: the original link keeps working, and so do the

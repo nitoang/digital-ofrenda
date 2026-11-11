@@ -8,7 +8,7 @@ const root = document.getElementById('app');
 const ref = (/^\/a\/([A-Za-z0-9_-]{1,64})\/?$/.exec(location.pathname) || [])[1];
 let id = null; // the ofrenda's real id; the address may have used its vanity name instead
 
-function shareBox(url) {
+function shareBox(url, kept) {
   const input = h('input', { id: 'share-url', type: 'url', readonly: true, value: url, 'aria-label': 'Link to view this ofrenda' });
   const copy = h('button', { type: 'button' }, 'Copy link');
   const note = h('span', { class: 'muted', role: 'status' });
@@ -27,8 +27,14 @@ function shareBox(url) {
   try { me = await getMe(); } catch (e) { mount(root, frame(null, h('p', { class: 'msg error', role: 'alert' }, describe(e)))); return; }
 
   const membership = me && me.altars.find(a => a.id === id);
-  let entitlements = {};
-  if (membership) { try { entitlements = (await api('GET', `/ofrendas/${id}/team`)).entitlements || {}; } catch { /* the server still enforces the limits */ } }
+  let entitlements = {}, visibility = 'link';
+  if (membership) {
+    try {
+      const team = await api('GET', `/ofrendas/${id}/team`);
+      entitlements = team.entitlements || {};
+      visibility = team.visibility || 'link';
+    } catch { /* the server still enforces the limits */ }
+  }
 
   // Someone who does not keep it, looking at one that has never been saved.
   if (!membership) {
@@ -36,7 +42,7 @@ function shareBox(url) {
     try { exists = (await fetch('/ofrendas/' + encodeURIComponent(id), { cache: 'no-store' })).ok; } catch { /* treated as missing */ }
     if (!exists) {
       mount(root, frame(me, h('h1', {}, 'This ofrenda is not ready yet'),
-        h('p', {}, 'Nothing has been saved here yet. If it is yours, sign in to keep working on it.'),
+        h('p', {}, 'Nothing has been saved here yet, or it is private. If it is yours, sign in to keep working on it.'),
         me ? null : h('p', {}, link('Sign in', '/signin?next=/a/' + id, { class: 'button primary' }))));
       return;
     }
@@ -57,8 +63,14 @@ function shareBox(url) {
   el.id = id;
   el.setAttribute('mode', membership ? 'edit' : 'view');
 
-  const tools = h('div', {}, shareBox(location.origin + '/a/' + ((membership && membership.slug) || id)),
-    membership ? h('p', {}, link('Keepers and sharing', `/a/${(membership && membership.slug) || id}/keepers`, { class: 'button' }))
+  // The link to paste into chats is /s/<name>: a tiny page with a title and picture for link previews that sends people on here.
+  const keepersPath = `/a/${(membership && membership.slug) || id}/keepers`;
+  const tools = h('div', {},
+    visibility === 'private'
+      ? h('p', { class: 'muted', id: 'private-note' }, 'This ofrenda is private: only the people who keep it can open it. ',
+        membership && membership.role === 'owner' ? link('Change who can see it', keepersPath) : null)
+      : shareBox(location.origin + '/s/' + ((membership && membership.slug) || id)),
+    membership ? h('p', {}, link('Keepers and sharing', keepersPath, { class: 'button' }))
       : (me ? null : h('p', { class: 'muted' }, 'Do you keep this ofrenda? ', link('Sign in', '/signin?next=/a/' + id), '.')));
   const [header, main] = frame(me, tools, msg.el, el);
   main.classList.add('wide');

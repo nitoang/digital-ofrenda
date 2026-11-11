@@ -23,6 +23,7 @@ const SHARE_ERRORS = {
   note_too_long: 'That note is too long. Please keep it under 280 characters.',
   note_has_link: 'Notes cannot contain web links.',
   too_many_shares: 'That address has been sent several links today. Please try again tomorrow.',
+  ofrenda_private: 'This ofrenda is private, so a link would not open for them. Allow anyone with the link first, or invite them to edit.',
   share_limit: 'This ofrenda has sent a lot of links today. Please try again tomorrow.',
 };
 const SUCCESSOR_ERRORS = {
@@ -99,7 +100,7 @@ async function render(note) {
   }));
 
   const sections = [h('h2', {}, 'Who keeps this ofrenda'), people];
-  if (owner) sections.push(...ownerSections(team, msg, run));
+  if (owner) sections.push(...visibilitySection(team, msg, run), ...ownerSections(team, msg, run));
   else sections.push(h('p', { class: 'muted' }, 'Only the owner can invite people, choose a successor, or delete the ofrenda.'));
 
   mount(root, frame(me,
@@ -114,6 +115,27 @@ function deleteNote(team) {
   if (owners > 1) return 'There is more than one owner, so this only removes you. The ofrenda stays with the other owners.';
   if (team.members.length > 1) return `Other people keep this ofrenda, so it is not erased. ${team.successor && team.successor.accepted ? 'It passes to your successor' : 'It passes to the people who keep it'}, and you stop being an owner. If they are already at the free limit, it is locked for them until they upgrade, but never deleted.`;
   return 'Nobody else keeps this ofrenda, so this removes it, and the link stops working. It cannot be undone.';
+}
+
+// Who can open the ofrenda at all. Private covers every link ever shared, and turning it back on brings them back.
+function visibilitySection(team, msg, run) {
+  const option = (value, label, hint) => h('label', { class: 'check' },
+    h('input', { type: 'radio', name: 'visibility', value, checked: team.visibility === value }),
+    h('span', {}, h('strong', {}, label), h('span', { class: 'muted' }, ' — ' + hint)));
+  const save = h('button', { type: 'submit' }, 'Save');
+  const form = h('form', { novalidate: true, id: 'visibility-form' },
+    h('fieldset', { class: 'choices' },
+      h('legend', {}, 'Who can open this ofrenda?'),
+      option('link', 'Anyone with the link', 'the default. Search engines are asked not to list it.'),
+      option('private', 'Only the people who keep it', 'every link stops working for everyone else, including ones you already sent. Turn it back on and they work again.')),
+    h('p', {}, save));
+  form.addEventListener('submit', ev => {
+    ev.preventDefault();
+    const visibility = form.querySelector('input[name="visibility"]:checked').value;
+    busy(save, () => run(() => api('PUT', `/ofrendas/${id}/visibility`, { visibility }),
+      visibility === 'private' ? 'This ofrenda is now private.' : 'Anyone with the link can open this ofrenda.'));
+  });
+  return [h('h2', {}, 'Who can see it'), form];
 }
 
 function ownerSections(team, msg, run) {

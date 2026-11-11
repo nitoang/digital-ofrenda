@@ -2,6 +2,9 @@
 // _headers and _redirects), and the real Worker code answering the API paths, on SQLite. Mail lands in
 // `sent`; time is controllable with tick(), so "180 days later" takes no time.
 const http = require('node:http');
+const https = require('node:https');
+const os = require('node:os');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -9,21 +12,22 @@ const { d1 } = require('./d1');
 
 const ROOT = path.resolve(__dirname, '..');
 const SITE = path.join(ROOT, 'site');
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png' };
 
-const isApi = p => p === '/me' || p === '/checkout' || p === '/ofrendas' || /^\/(auth|me|ofrendas|invites|successor|stripe)\//.test(p);
+const isApi = p => p === '/me' || p === '/checkout' || p === '/ofrendas' || p === '/healthz' || /^\/(auth|me|ofrendas|invites|successor|stripe|resend|s)\//.test(p);
 
-// Cloudflare Pages _headers: indented "Name: value" lines under a path line. Only "/*" is used here.
-function readHeaders() {
-  const out = {};
-  let on = false;
+// Cloudflare Pages _headers: a path line, then indented "Name: value" lines. "/*" applies everywhere and "/a/*" to
+// anything under /a/. headersFor(pathname) gives what Pages would send for that path.
+function readHeaderRules() {
+  const rules = [];
+  let current = null;
   for (const line of fs.readFileSync(path.join(SITE, '_headers'), 'utf8').split('\n')) {
     if (!line.trim() || line.trim().startsWith('#')) continue;
-    if (!/^\s/.test(line)) { on = line.trim() === '/*'; continue; }
+    if (!/^\s/.test(line)) { current = { prefix: line.trim().replace(/\*$/, ''), headers: {} }; rules.push(current); continue; }
     const i = line.indexOf(':');
-    if (on && i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    if (current && i > 0) current.headers[line.slice(0, i).trim()] = line.slice(i + 1).trim();
   }
-  return out;
+  return pathname => Object.assign({}, ...rules.filter(r => pathname.startsWith(r.prefix)).map(r => r.headers));
 }
 
 // _redirects: "from to status"; :name matches one path segment. Status 200 means rewrite.
@@ -47,10 +51,25 @@ function resolveFile(pathname, rewrites) {
   return p === '/ofrenda.js' ? component : null;
 }
 
+// The session cookie is "__Host-...; Secure", which Safari's engine (WebKit) refuses to keep on plain http://localhost
+// (Chrome and Firefox make an exception for localhost). So the browser tests serve the site over https with a throwaway
+// self-signed certificate, and the test browsers are told to accept it. That is also closer to production.
+let certificate = null;
+function selfSigned() {
+  if (certificate) return certificate;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ofrenda-tls-'));
+  const key = path.join(dir, 'key.pem'), cert = path.join(dir, 'cert.pem');
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', key, '-out', cert,
+    '-days', '2', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'], { stdio: 'ignore' });
+  certificate = { key: fs.readFileSync(key), cert: fs.readFileSync(cert) };
+  fs.rmSync(dir, { recursive: true, force: true });
+  return certificate;
+}
+
 const STRIPE_ENV = { STRIPE_SECRET_KEY: 'sk_test_x', STRIPE_PRICE_EXTRA_PHOTOS: 'price_photos', STRIPE_PRICE_SEVEN_TIERS: 'price_tiers', STRIPE_PRICE_PLATINUM: 'price_platinum' };
 
-// stripe: true makes purchases available, answered by a stand-in for Stripe that records what it was asked.
-async function startSite({ env: envOver = {}, port = 0, onMail, stripe = false } = {}) {
+// tls: true serves https with a throwaway certificate (browsers must ignore certificate errors). stripe: true makes purchases available, answered by a stand-in for Stripe that records what it was asked.
+async function startSite({ env: envOver = {}, port = 0, onMail, stripe = false, tls = false } = {}) {
   const w = await import('../server/worker.mjs');
   const store = await import('../server/store.mjs');
   const { RULES } = await import('../server/rules.mjs');
@@ -65,11 +84,12 @@ async function startSite({ env: envOver = {}, port = 0, onMail, stripe = false }
     return new Response(JSON.stringify({ id: 'cs_test_' + n, url: 'https://checkout.stripe.com/c/pay/cs_test_' + n }));
   };
   const handler = w.createHandler({ fetch: fakeFetch, now: () => Date.now() + offset, mailer: { send: async m => { sent.push(m); onMail?.(m); } }, defer: p => void p.catch(() => {}) });
-  const headers = readHeaders();
+  const headersFor = readHeaderRules();
+  const headers = headersFor('/'); // what every page gets
   const rewrites = readRewrites();
   let origin = '';
 
-  const server = http.createServer(async (req, res) => {
+  const listener = async (req, res) => {
     try {
       const url = new URL(req.url, origin);
       if (isApi(url.pathname)) {
@@ -85,15 +105,16 @@ async function startSite({ env: envOver = {}, port = 0, onMail, stripe = false }
         return;
       }
       const f = resolveFile(url.pathname, rewrites);
-      if (!f) { res.writeHead(404, { ...headers, 'content-type': 'text/plain' }).end('not found'); return; }
-      res.writeHead(200, { ...headers, 'content-type': TYPES[path.extname(f)] || 'application/octet-stream' }).end(fs.readFileSync(f));
+      if (!f) { res.writeHead(404, { ...headersFor(url.pathname), 'content-type': 'text/plain' }).end('not found'); return; }
+      res.writeHead(200, { ...headersFor(url.pathname), 'content-type': TYPES[path.extname(f)] || 'application/octet-stream' }).end(fs.readFileSync(f));
     } catch (e) {
       console.error(e);
       res.writeHead(500).end('server error');
     }
-  });
+  };
+  const server = tls ? https.createServer(selfSigned(), listener) : http.createServer(listener);
   await new Promise(r => server.listen(port, r));
-  origin = 'http://localhost:' + server.address().port;
+  origin = `${tls ? 'https' : 'http'}://localhost:${server.address().port}`;
   env.APP_URL = origin;
 
   const until = async (fn, what, ms = 5000) => {
@@ -114,7 +135,7 @@ async function startSite({ env: envOver = {}, port = 0, onMail, stripe = false }
       const body = JSON.stringify({ type, data: { object: { payment_status: 'paid', client_reference_id: form.client_reference_id, metadata: { feature: form['metadata[feature]'] } } } });
       const t = Math.floor((Date.now() + offset) / 1000);
       const mac = crypto.createHmac('sha256', 'whsec_test').update(`${t}.${body}`).digest('hex');
-      const r = await fetch(origin + '/stripe/webhook', { method: 'POST', headers: { 'stripe-signature': `t=${t},v1=${mac}` }, body });
+      const r = await handler(new Request(origin + '/stripe/webhook', { method: 'POST', headers: { 'stripe-signature': `t=${t},v1=${mac}` }, body }), env);
       if (!r.ok) throw new Error('webhook refused: ' + r.status);
     },
     // The 6-digit code in the newest mail to `email` after index `from`.
@@ -128,7 +149,8 @@ async function startSite({ env: envOver = {}, port = 0, onMail, stripe = false }
       return m && re.exec(m.text)[1];
     }, `an email to ${email} matching ${re}`),
     mail: (email, re) => until(() => sent.find(x => x.to === email.toLowerCase() && re.test(x.subject)), `a mail to ${email} about ${re}`),
-    close: () => new Promise(r => server.close(r)),
+    // Closes for good, even if a browser page still holds a connection open: a failing test must report, not hang.
+    close: () => new Promise(r => { server.close(r); server.closeAllConnections?.(); }),
   };
 }
 

@@ -34,7 +34,8 @@ export async function handleTeam(request, env, deps, id) {
   // switch the matching options on in the editor. The server still enforces every limit on save.
   const entitlements = await store.getEntitlements(env.DB, id, FEATURES);
   const slug = await store.currentSlug(env.DB, id);
-  if (s.role !== 'owner') return json({ role: s.role, members, entitlements, slug });
+  const visibility = (await store.getAltar(env.DB, id))?.visibility ?? 'link';
+  if (s.role !== 'owner') return json({ role: s.role, members, entitlements, slug, visibility });
   const now = deps.now();
   const successor = await store.getSuccessor(env.DB, id);
   const claim = await store.getClaim(env.DB, id);
@@ -44,6 +45,7 @@ export async function handleTeam(request, env, deps, id) {
     members,
     entitlements,
     slug,
+    visibility,
     invites: (await store.listInvites(env.DB, id, now)).map(i => ({ id: i.id, email: i.email, expiresAt: i.expires_at })),
     locked: await store.ownerLocked(env.DB, id, s.user.id, RULES.freeAltars),
     handover: handover ? { email: handover.to_email, expiresAt: handover.expires_at } : null,
@@ -111,6 +113,10 @@ async function sendInvite(env, deps, id, s, email, note) {
 // courtesy that says who it is from. Only a hash of the address is kept, to stop one inbox being flooded.
 async function sendViewLink(env, deps, id, s, email, note) {
   const now = deps.now();
+  // A link to a private ofrenda opens nothing for the person it is sent to. Better to say so than to send a dead link.
+  if ((await store.getAltar(env.DB, id))?.visibility === 'private') {
+    return json({ error: 'ofrenda_private', message: 'This ofrenda is private, so a link would not open for them. Allow anyone with the link first, or invite them to edit.' }, 409);
+  }
   const members = await store.listMembers(env.DB, id);
   if (members.some(m => m.email === email)) return json({ error: 'already_member' }, 409);
   const emailHash = await sha256Hex(email);

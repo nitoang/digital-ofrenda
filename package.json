@@ -6,7 +6,9 @@
   "scripts": {
     "test": "node --test --test-concurrency=1 tests/*.test.js",
     "build:site": "node scripts/build-site.mjs",
-    "dev": "node scripts/dev.js"
+    "dev": "node scripts/dev.js",
+    "test:unit": "node --test --test-concurrency=1 tests/worker.test.js tests/server.test.js tests/mailer.test.js tests/typos.test.js",
+    "test:browser": "node --test --test-concurrency=1 --test-timeout=120000 tests/ofrenda.test.js tests/site.test.js"
   },
   "devDependencies": {
     "playwright": "^1.50.0"

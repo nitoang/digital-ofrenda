@@ -6,8 +6,10 @@ on:
 permissions:
   contents: read
 jobs:
+  # The Worker, validator, mailer and typo tests: no browser, so once is enough.
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -16,5 +18,27 @@ jobs:
         with:
           node-version: 22   # node:sqlite, used by the Worker tests
       - run: npm install --no-audit --no-fund
-      - run: npx playwright install --with-deps chromium
-      - run: npm test
+      - run: npm run test:unit
+
+  # The component and the whole website, in each browser engine people use (Chrome/Edge/Opera, Firefox, and
+  # Safari, which is WebKit). The two real-touch tests need Chrome's DevTools Protocol and run in Chromium only.
+  browser:
+    name: browser (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20   # a hung browser should fail the job, not sit for hours
+    strategy:
+      fail-fast: false   # one engine failing should not hide what the others say
+      matrix:
+        browser: [chromium, firefox, webkit]
+    env:
+      BROWSER: ${{ matrix.browser }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
+      - run: npm run test:browser

@@ -127,7 +127,8 @@ export async function countOwnedAltars(db, userId) {
   const r = await one(db, "SELECT COUNT(*) AS n FROM altar_members WHERE user_id = ? AND role = 'owner'", userId);
   return r ? Number(r.n) : 0;
 }
-export const getAltar = (db, id) => one(db, 'SELECT id, state FROM altars WHERE id = ?', id);
+export const getAltar = (db, id) => one(db, 'SELECT id, state, visibility FROM altars WHERE id = ?', id);
+export const setVisibility = async (db, id, visibility) => (await run(db, 'UPDATE altars SET visibility = ? WHERE id = ?', visibility, id)).meta.changes > 0;
 export const saveState = (db, id, stateJson, now) => run(db, 'UPDATE altars SET state = ?, updated_at = ? WHERE id = ?', stateJson, now, id);
 export const deleteAltar = (db, id) => run(db, 'DELETE FROM altars WHERE id = ?', id);
 export async function getRole(db, altarId, userId) {
@@ -395,3 +396,22 @@ export const addSuppression = (db, { emailHash, reason, now }) =>
   run(db, `INSERT INTO mail_suppressions (email_hash, reason, created_at) VALUES (?, ?, ?)
     ON CONFLICT (email_hash) DO UPDATE SET reason = 'bounce' WHERE excluded.reason = 'bounce' AND mail_suppressions.reason != 'bounce'`, emailHash, reason, now);
 export const getSuppression = async (db, emailHash) => (await one(db, 'SELECT reason FROM mail_suppressions WHERE email_hash = ?', emailHash))?.reason ?? null;
+
+// ---------- monitoring ----------
+export const jobStarted = (db, name, now) =>
+  run(db, 'INSERT INTO job_runs (name, started_at) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET started_at = excluded.started_at', name, now);
+export const jobOk = (db, name, now) => run(db, 'UPDATE job_runs SET ok_at = ?, failed_at = NULL, error = NULL WHERE name = ?', now, name);
+export const jobFailed = (db, name, now, error) => run(db, 'UPDATE job_runs SET failed_at = ?, error = ? WHERE name = ?', now, error, name);
+export const getJob = (db, name) => one(db, 'SELECT started_at, ok_at, failed_at FROM job_runs WHERE name = ?', name);
+export const databaseAnswers = async db => (await one(db, 'SELECT 1 AS ok'))?.ok === 1;
+
+// Claims the right to email the operator about `kind`. Returns null during the cool-down (counting the repeat), or how
+// many repeats were held back since the last email.
+export async function claimAlert(db, { kind, now, cooldown }) {
+  const held = await run(db, 'UPDATE alerts SET suppressed = suppressed + 1 WHERE kind = ? AND last_sent_at > ?', kind, now - cooldown);
+  if (held.meta.changes > 0) return null;
+  const before = (await one(db, 'SELECT suppressed FROM alerts WHERE kind = ?', kind))?.suppressed ?? 0;
+  await run(db, `INSERT INTO alerts (kind, last_sent_at, suppressed) VALUES (?, ?, 0)
+    ON CONFLICT (kind) DO UPDATE SET last_sent_at = excluded.last_sent_at, suppressed = 0`, kind, now);
+  return before;
+}
