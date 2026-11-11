@@ -16,8 +16,10 @@ const DAY = 86_400_000;
 const altar = (...items) => ({ format: 'digital-ofrenda', kind: 'person', name: 'Abuela', items });
 
 // A fresh browser (own cookies) on a fresh copy of the product.
+const opened = []; // every browser context a test opened, closed when the test ends so none pile up
 async function visitor() {
-  const ctx = await browser.newContext({ viewport: { width: 1000, height: 1300 } });
+  const ctx = await browser.newContext({ viewport: { width: 1000, height: 1300 }, ignoreHTTPSErrors: true }); // the test site uses a self-signed certificate
+  opened.push(ctx);
   const page = await ctx.newPage();
   page.on('pageerror', e => problems.push('pageerror: ' + e.message));
   page.on('dialog', d => { problems.push('dialog: ' + d.message()); d.dismiss(); });
@@ -52,9 +54,10 @@ async function until(fn, what = String(fn), ms = 5000) {
   }
 }
 
+const closeContexts = () => Promise.allSettled(opened.splice(0).map(c => c.close()));
 const withSite = (name, fn) => test(name, async () => {
-  site = await startSite();
-  try { await fn(); } finally { await site.close(); }
+  site = await startSite({ tls: true });
+  try { await fn(); } finally { await closeContexts(); await site.close(); }
 });
 
 // Every field has a name a screen reader can announce.
@@ -72,8 +75,8 @@ const startOfrenda = async page => {
 const serverState = id => { const r = site.db.prepare('SELECT state FROM altars WHERE id = ?').get(id); return r && r.state ? JSON.parse(r.state) : null; };
 
 const withShop = (name, fn, opts = {}) => test(name, async () => {
-  site = await startSite({ stripe: true, ...opts });
-  try { await fn(); } finally { await site.close(); }
+  site = await startSite({ stripe: true, tls: true, ...opts });
+  try { await fn(); } finally { await closeContexts(); await site.close(); }
 });
 // Stripe's own pages are not part of this test: stand in for them.
 const fakeStripePages = ctx => ctx.route('https://checkout.stripe.com/**', r => r.fulfill({ status: 200, contentType: 'text/html', body: '<h1>Pretend Stripe</h1>' }));

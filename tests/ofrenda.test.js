@@ -108,7 +108,15 @@ test('multiple photos: fill empty frame, then add more, then replace one', async
   // New frames land at a random spot; park it in a corner so it can't sit on top of the first frame.
   await el.evaluate(e => { const f = e._state.items.filter(i => i.type === 'photo')[1]; f.x = 90; f.y = 90; e._render(); });
   // Clicking a frame replaces its photo (a different image, so the data changes) without adding a frame.
-  const [fc] = await Promise.all([page.waitForEvent('filechooser'), el.locator('.item.photo').first().click()]);
+  // The click and the wait are separate steps with their own limits, so a failure says which one went wrong: the
+  // click could not be made (Playwright's log says why), the picker did not open, or the upgrade prompt fired instead.
+  await page.evaluate(() => { window.__up = []; document.addEventListener('upgrade-request', e => window.__up.push(e.detail.feature)); });
+  const chooser = page.waitForEvent('filechooser', { timeout: 10_000 });
+  chooser.catch(() => {}); // reported below, with the reason, rather than as an unhandled rejection
+  await el.locator('.item.photo').first().click({ timeout: 10_000 });
+  const fc = await chooser.catch(async () => {
+    throw new Error('clicking a photo frame did not open the file picker; upgrade-request events: ' + JSON.stringify(await page.evaluate(() => window.__up)));
+  });
   await fc.setFiles(tmpFile('b.png', solidPng(4, 4, 255, 0, 0)));
   await until(async () => (await photos())[0].src !== first);
   assert.equal((await photos()).length, 2, 'clicking a frame replaces, not adds');

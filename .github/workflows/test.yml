@@ -9,6 +9,7 @@ jobs:
   # The Worker, validator, mailer and typo tests: no browser, so once is enough.
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,6 +25,7 @@ jobs:
   browser:
     name: browser (${{ matrix.browser }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20   # a hung browser should fail the job, not sit for hours
     strategy:
       fail-fast: false   # one engine failing should not hide what the others say
       matrix:
