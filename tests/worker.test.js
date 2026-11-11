@@ -281,7 +281,7 @@ test('altars: need a session; free accounts own three, platinum owns any number'
   for (let i = 0; i < 5; i++) assert.equal((await maria.call('POST', '/ofrendas')).status, 201);
   const me = await maria.json('GET', '/me');
   assert.equal(me.body.altars.length, 8);
-  assert.deepEqual(me.body.user, { id: maria.id, email: 'maria@example.com', plan: 'platinum' });
+  assert.deepEqual(me.body.user, { id: maria.id, email: 'maria@example.com', plan: 'platinum', tips: true });
   assert.ok(me.body.altars.every(a => a.role === 'owner'));
 });
 
@@ -1886,4 +1886,99 @@ test('export: the upgrades an ofrenda has are listed', async () => {
   await t.store.grantFeature(t.env.DB, id, 'extraPhotos', t.now());
   const [o] = (await (await a.call('GET', '/me/export')).json()).ofrendas;
   assert.deepEqual(o.upgrades.map(u => u.feature), ['extraPhotos']);
+});
+
+// ---------- optional tips for people who have been away ----------
+const tipsTo = async (t, email) => (await t.mailTo(email)).filter(m => /small idea|One more thing/.test(m.subject));
+
+test('tips: one at six months away, one at nine, then no more', async () => {
+  const t = await setup();
+  await t.signIn('quiet@example.com');
+  t.tick(t.RULES.nudgeAfter[0] - DAY);
+  await t.runJob();
+  assert.equal((await tipsTo(t, 'quiet@example.com')).length, 0, 'not yet');
+  t.tick(2 * DAY);
+  await t.runJob(); await t.runJob();
+  const first = await tipsTo(t, 'quiet@example.com');
+  assert.deepEqual(first.map(m => m.subject), ['A small idea for your ofrenda'], 'once, even if the job runs twice');
+  assert.ok(first[0].text.includes(`${ORIGIN}/my`) && first[0].text.endsWith(first[0].text.slice(first[0].text.indexOf('To stop these emails'))));
+  assert.match(first[0].text, /To stop these emails: https:\/\/ofrenda\.test\/stop-tips#t=[\w-]{20,}/);
+  assert.ok(first[0].text.includes('Digifrenda 🧡'));
+  t.tick(t.RULES.nudgeAfter[1] - t.RULES.nudgeAfter[0]);
+  await t.runJob();
+  assert.deepEqual((await tipsTo(t, 'quiet@example.com')).map(m => m.subject), ['A small idea for your ofrenda', 'One more thing you can add to your ofrenda']);
+  t.tick(400 * DAY);
+  await t.runJob();
+  assert.equal((await tipsTo(t, 'quiet@example.com')).length, 2, 'two tips is all they ever get');
+});
+
+test('tips: someone away for years gets them spaced out, not both at once', async () => {
+  const t = await setup();
+  await t.signIn('gone@example.com');
+  t.tick(3 * 365 * DAY);
+  await t.runJob();
+  assert.equal((await tipsTo(t, 'gone@example.com')).length, 1);
+  await t.runJob();
+  assert.equal((await tipsTo(t, 'gone@example.com')).length, 1, 'not the same day');
+  t.tick(t.RULES.nudgeGap + DAY);
+  await t.runJob();
+  assert.equal((await tipsTo(t, 'gone@example.com')).length, 2);
+});
+
+test('tips: signing in starts them over, and people who are active get none', async () => {
+  const t = await setup();
+  await t.signIn('back@example.com');
+  t.tick(t.RULES.nudgeAfter[0] + DAY);
+  await t.runJob();
+  assert.equal((await tipsTo(t, 'back@example.com')).length, 1);
+  await t.signIn('back@example.com');
+  assert.equal(t.db.prepare('SELECT nudges_sent n FROM users WHERE email = ?').get('back@example.com').n, 0);
+  t.tick(t.RULES.nudgeAfter[0] - DAY);
+  await t.runJob();
+  assert.equal((await tipsTo(t, 'back@example.com')).length, 1, 'nothing new until six months after the new sign-in');
+  t.tick(t.RULES.nudgeGap + 2 * DAY);
+  await t.runJob();
+  assert.equal((await tipsTo(t, 'back@example.com')).length, 2);
+});
+
+test('tips: the switch in My ofrendas turns them off and on', async () => {
+  const t = await setup();
+  const me = await t.signIn('switch@example.com');
+  assert.equal((await me.json('GET', '/me')).body.user.tips, true, 'on unless the person chooses otherwise');
+  assert.equal((await me.call('PUT', '/me/tips', { on: 'yes' })).status, 400);
+  assert.deepEqual((await me.json('PUT', '/me/tips', { on: false })).body, { tips: false });
+  assert.equal((await me.json('GET', '/me')).body.user.tips, false);
+  t.tick(t.RULES.nudgeAfter[0] + DAY);
+  await t.runJob();
+  assert.equal((await tipsTo(t, 'switch@example.com')).length, 0);
+  assert.equal((await t.call('PUT', '/me/tips', { body: { on: true } })).status, 401, 'needs a signed-in person');
+});
+
+test('tips: the link in a tip turns them off without signing in, and only that', async () => {
+  const t = await setup();
+  const me = await t.signIn('link@example.com');
+  t.tick(t.RULES.nudgeAfter[0] + DAY);
+  await t.runJob();
+  const token = await t.tokenFrom('link@example.com', /stop-tips#t=([\w-]+)/);
+  assert.equal((await t.call('POST', '/tips/off', { body: { token: 'x'.repeat(30) } })).status, 400, 'a made-up token does nothing');
+  assert.equal((await t.call('POST', '/tips/off', { body: { token } , origin: 'https://evil.test' })).status, 403);
+  const res = await t.call('POST', '/tips/off', { body: { token } });
+  assert.deepEqual([res.status, await res.json()], [200, { tips: false }]);
+  assert.equal((await t.call('GET', '/me')).status, 401, 'the link signs nobody in');
+  assert.equal(t.db.prepare('SELECT nudges_off n FROM users WHERE id = ?').get(me.id).n, 1);
+  t.tick(t.RULES.nudgeAfter[1]);
+  await t.runJob();
+  assert.equal((await tipsTo(t, 'link@example.com')).length, 1, 'no second tip');
+});
+
+test('tips: an owner whose ofrenda has a takeover notice running gets none', async () => {
+  const t = await setup();
+  const { owner, heir, id } = await t.heirScenario();
+  t.db.prepare('INSERT INTO claims (altar_id, requested_by, requested_at, executes_at) VALUES (?, ?, ?, ?)').run(id, heir.id, t.now(), t.now() + 400 * DAY);
+  t.tick(t.RULES.nudgeAfter[0] + DAY);
+  await t.runJob();
+  assert.equal((await tipsTo(t, 'owner@example.com')).length, 0);
+  t.db.prepare('DELETE FROM claims').run();
+  await t.runJob();
+  assert.equal((await tipsTo(t, 'owner@example.com')).length, 1, 'and they get one once the notice is over');
 });

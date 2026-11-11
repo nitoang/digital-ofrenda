@@ -97,7 +97,7 @@ export async function handleMe(request, env, deps) {
   const rows = await store.altarsForUser(env.DB, s.user.id);
   let owned = 0; // rows are oldest first, so the ones past the free limit are the locked ones
   const altars = rows.map(r => r.role === 'owner' ? { ...r, locked: s.user.plan !== 'platinum' && ++owned > RULES.freeAltars } : r);
-  return json({ user: { id: s.user.id, email: s.user.email, plan: s.user.plan ?? null }, altars, successorOf });
+  return json({ user: { id: s.user.id, email: s.user.email, plan: s.user.plan ?? null, tips: !(await store.tipsAreOff(env.DB, s.user.id)) }, altars, successorOf });
 }
 
 // The ofrenda page tells us a signed-in person opened it. Counted once a day per person, never for owners, and

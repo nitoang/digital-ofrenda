@@ -1,22 +1,24 @@
 // The daily job (a Cloudflare cron trigger). It is the only thing in the app that acts without a request, so it
-// does four things and nothing else, and every step can be run twice without doing anything twice:
+// does five things and nothing else, and every step can be run twice without doing anything twice:
 //
 //   1. Successor notices. If an owner (every owner) has been away for the period chosen with the successor, and
 //      automatic transfer is on, start the 30-day notice and email the owner and the successor.
 //   2. Reminders during the notice: days 15 and 27 (RULES.claimReminders). Day 0 is the notice itself.
 //   3. Finish notices that ran out without the owner coming back (only ones the job started; a notice the
 //      successor asked for is completed by the successor). Signing in cancels a notice before this runs.
-//   4. Handovers still waiting for someone to sign up: remind them (RULES.handoverReminders), and when the
+//   4. Optional tips for people who have been away a long time (RULES.nudgeAfter). Account emails always go out;
+//      these respect the person's choice to turn them off.
+//   5. Handovers still waiting for someone to sign up: remind them (RULES.handoverReminders), and when the
 //      time is up give the ofrenda to the signed-in person who opened it on the most days (a tie gives it to
 //      all of them), else the agreed successor, else the people who already keep it, else leave it with the owner.
 
 import * as store from './store.mjs';
 import { RULES } from './rules.mjs';
-import { DAY } from './util.mjs';
+import { DAY, newToken } from './util.mjs';
 import { finishTakeover, altarName } from './team.mjs';
 import {
   queueMail, autoClaimNoticeMessage, autoClaimSuccessorMessage, claimReminderMessage,
-  handoverReminderMessage, handoverEndedGiverMessage, handoverClosedRecipientMessage, handoverFallbackOwnerMessage,
+  handoverReminderMessage, nudgeShareMessage, nudgeAddMessage, handoverEndedGiverMessage, handoverClosedRecipientMessage, handoverFallbackOwnerMessage,
 } from './mail.mjs';
 
 const send = (deps, msg) => queueMail(deps, () => deps.mailer.send(msg));
@@ -98,6 +100,17 @@ async function remindRecipients(env, deps, now, h, appUrl) {
   send(deps, handoverReminderMessage({ to: h.to_email, from: giver.email, link: `${appUrl}/signin`, name: await altarName(env, h.altar_id), daysLeft: daysLeft(h.expires_at, now) }));
 }
 
+const TIPS = [nudgeShareMessage, nudgeAddMessage];
+
+async function sendTips(env, deps, now) {
+  const due = await store.dueNudges(env.DB, { now, after: RULES.nudgeAfter, gap: RULES.nudgeGap, limit: RULES.jobBatch });
+  await each(due, async u => {
+    if (!(await store.bumpNudge(env.DB, u.id, u.nudges_sent, now))) return;
+    const token = await store.unsubToken(env.DB, u.id, newToken());
+    send(deps, TIPS[u.nudges_sent]({ to: u.email, link: `${env.APP_URL}/my`, unsubscribeLink: `${env.APP_URL}/stop-tips#t=${token}` }));
+  });
+}
+
 export async function runScheduled(env, deps) {
   if (!env.DB || !deps.mailer) { console.error('scheduled job skipped: DB or MAILER is not configured'); return; }
   const now = deps.now();
@@ -105,6 +118,7 @@ export async function runScheduled(env, deps) {
   const claims = await store.runningClaims(env.DB, RULES.jobBatch);
   await remindOwners(env, deps, now, claims);
   await finishNotices(env, deps, now, claims);
+  await sendTips(env, deps, now);
   await each(await store.waitingHandovers(env.DB, RULES.jobBatch), async h => {
     if (h.expires_at <= now) await endHandover(env, deps, now, h);
     else await remindRecipients(env, deps, now, h, env.APP_URL);

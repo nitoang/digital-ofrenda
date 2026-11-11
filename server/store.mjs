@@ -17,7 +17,8 @@ export async function findOrCreateUser(db, { id, email, now }) {
   const user = await findUserByEmail(db, email);
   return user && { ...user, created: r?.meta?.changes > 0 };
 }
-export const touchUser = (db, id, now) => run(db, 'UPDATE users SET last_seen_at = ? WHERE id = ?', now, id);
+// Signing in also starts the optional tips over: someone who comes back and drifts away again gets them again.
+export const touchUser = (db, id, now) => run(db, 'UPDATE users SET last_seen_at = ?, nudges_sent = 0 WHERE id = ?', now, id);
 export async function setPlan(db, id, plan) {
   return (await run(db, 'UPDATE users SET plan = ? WHERE id = ?', plan, id)).meta.changes > 0;
 }
@@ -347,6 +348,32 @@ export async function topVisitors(db, altarId) {
     ORDER BY u.email`, altarId);
 }
 
+
+// ---------- optional tips ----------
+export const tipsAreOff = async (db, userId) => (await one(db, 'SELECT nudges_off FROM users WHERE id = ?', userId))?.nudges_off === 1;
+export const setTipsOff = (db, userId, off) => run(db, 'UPDATE users SET nudges_off = ? WHERE id = ?', off ? 1 : 0, userId);
+// The one-click link in a tip. True if it matched someone.
+export async function turnTipsOffByToken(db, token) {
+  return (await run(db, 'UPDATE users SET nudges_off = 1 WHERE unsub_token = ?', token)).meta.changes > 0;
+}
+// The value in this person's unsubscribe link, made the first time it is needed and the same every time after.
+export async function unsubToken(db, userId, fresh) {
+  return (await one(db, 'UPDATE users SET unsub_token = COALESCE(unsub_token, ?) WHERE id = ? RETURNING unsub_token', fresh, userId))?.unsub_token;
+}
+// People due a tip: away long enough for the next one (`after[sent]`), tips not turned off, not too soon after the last
+// one, and not an owner of an ofrenda with a takeover notice running (that email matters more).
+export const dueNudges = (db, { now, after, gap, limit }) =>
+  all(db, `SELECT u.id, u.email, u.nudges_sent FROM users u
+    WHERE u.nudges_off = 0 AND u.nudges_sent < ?
+      AND u.last_seen_at <= ? - CASE u.nudges_sent WHEN 0 THEN ? ELSE ? END
+      AND (u.last_nudge_at IS NULL OR u.last_nudge_at <= ? - ?)
+      AND NOT EXISTS (SELECT 1 FROM altar_members m JOIN claims c ON c.altar_id = m.altar_id
+        WHERE m.user_id = u.id AND m.role = 'owner' AND c.cancelled_at IS NULL AND c.completed_at IS NULL)
+    ORDER BY u.last_seen_at LIMIT ?`, after.length, now, after[0], after[1], now, gap, limit);
+// True for the one run that moves the count on, so two overlapping runs cannot both send the same tip.
+export async function bumpNudge(db, userId, sent, now) {
+  return (await run(db, 'UPDATE users SET nudges_sent = nudges_sent + 1, last_nudge_at = ? WHERE id = ? AND nudges_sent = ? AND nudges_off = 0', now, userId, sent)).meta.changes > 0;
+}
 
 // ---------- the daily job ----------
 // Ofrendas whose agreed successor may now be given the 30-day notice by the job: automatic transfer is on, no notice

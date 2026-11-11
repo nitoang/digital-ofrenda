@@ -168,6 +168,22 @@ export const autoClaimSuccessorMessage = ({ to, executesAt }) => ({
   text: `The owner of an ofrenda you agreed to look after hasn't signed in for a long time, so the 30-day notice has started. We've emailed them.\n\nIf they don't come back, it becomes yours on ${day(executesAt)}, and they'll stay on as a co-keeper. If they sign in before then, it stops, and you stay their successor.\n\nYou don't need to do anything.${signoff}`,
 });
 
+// ---------- optional tips, sent by the daily job to people who have been away for a long time ----------
+// Unlike every email above, these can be turned off. Each one carries a one-click link to do that.
+const stopTips = unsubscribeLink => `\n\nYou're getting this because you have a Digifrenda account. To stop these emails: ${unsubscribeLink}`;
+
+export const nudgeShareMessage = ({ to, link, unsubscribeLink }) => ({
+  to,
+  subject: 'A small idea for your ofrenda',
+  text: `Many people say an ofrenda fills in slowly, over months. Here's one thing you can try:\n\nShare it view-only with someone who knew them. They don't need an account to visit, and they might remember something you'd forgotten.\n\nOpen your ofrenda:\n${link}${signoff}${stopTips(unsubscribeLink)}`,
+});
+
+export const nudgeAddMessage = ({ to, link, unsubscribeLink }) => ({
+  to,
+  subject: 'One more thing you can add to your ofrenda',
+  text: `Your ofrenda can hold more than photos. Try adding one thing they loved, like a favorite song, a dish, or a place, and one short memory in your own words.\n\nOpen your ofrenda:\n${link}${signoff}${stopTips(unsubscribeLink)}`,
+});
+
 // ---------- a handover that is waiting for someone to sign up ----------
 export const handoverReminderMessage = ({ to, from, link, name = '', daysLeft }) => ({
   to,

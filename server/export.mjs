@@ -40,7 +40,7 @@ export async function handleExport(request, env, deps) {
 
   const body = {
     format: 'digital-ofrenda-account-export', version: 1, exported: iso(now),
-    account: { id: user.id, email: user.email, plan: user.plan ?? null, created: iso(await store.getUserCreated(env.DB, user.id)), lastSeen: iso(user.last_seen_at) },
+    account: { id: user.id, email: user.email, plan: user.plan ?? null, created: iso(await store.getUserCreated(env.DB, user.id)), lastSeen: iso(user.last_seen_at), tipsByEmail: !(await store.tipsAreOff(env.DB, user.id)) },
     ofrendas,
   };
   const day = iso(now).slice(0, 10);

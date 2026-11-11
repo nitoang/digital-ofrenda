@@ -27,6 +27,8 @@ export const RULES = Object.freeze({
   successorWaits: Object.freeze({ 6: 183 * DAY, 12: 365 * DAY }), // months the owner may choose before a takeover can start
   claimReminders: [15 * DAY, 27 * DAY],            // reminders to the owner during the 30-day notice (the notice itself is day 0)
   handoverReminders: [30 * DAY, 60 * DAY, 85 * DAY], // reminders to a person who has not signed up for a waiting handover
-  jobBatch: 100,                       // rows each step of the daily job handles per run
+  nudgeAfter: [183 * DAY, 274 * DAY],  // optional tips: how long since sign-in before the first (6 months) and second (9 months) goes out
+  nudgeGap: 60 * DAY,                  // at least this long between two tips, even for someone who has been away for years
+  jobBatch: 100,                      // rows each step of the daily job handles per run
   claimWait: 30 * DAY,                 // notice period; the owner signing in at any point cancels it
 });

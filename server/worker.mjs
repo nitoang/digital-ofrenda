@@ -21,6 +21,7 @@
 //   GET  /me                                               who I am, my altars, takeovers I could start
 //   GET  /me/export                                        download everything I have, as one JSON file (see export.mjs)
 //   DELETE /me {email, deleteOfrendas?}                    delete my account (see account.mjs)
+//   PUT  /me/tips {on}                                     turn the optional tips by email on or off; POST /tips/off {token} is the link in each tip
 //   POST /me/email {email} | POST /me/email/confirm {code} change my email, proved with a code sent to the new one
 //   POST /ofrendas                                         create one (free accounts: RULES.freeAltars)
 //   GET  /ofrendas/:id                                     public view
@@ -70,6 +71,8 @@ const ROUTES = [
   ['GET', /^\/me$/, altars.handleMe],
   ['GET', /^\/me\/export$/, handleExport],
   ['DELETE', /^\/me$/, account.handleDeleteAccount],
+  ['PUT', /^\/me\/tips$/, account.handleSetTips],
+  ['POST', /^\/tips\/off$/, account.handleTipsOffByLink],
   ['POST', /^\/me\/email$/, account.handleStartEmailChange],
   ['POST', /^\/me\/email\/confirm$/, account.handleConfirmEmailChange],
   ['POST', /^\/checkout$/, handleCheckout],

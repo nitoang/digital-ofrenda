@@ -17,6 +17,25 @@ import { queueMail, emailChangeCodeMessage, emailChangedNoticeMessage } from './
 import { RULES } from './rules.mjs';
 import { retireOwner } from './owners.mjs';
 
+// Optional tips (see scheduled.mjs). PUT /me/tips {on} is the switch in My ofrendas; POST /tips/off {token} is the
+// one-click link in every tip. The token turns tips off and does nothing else, so it needs no sign-in.
+export async function handleSetTips(request, env, deps) {
+  const s = await requireUser(request, env, deps);
+  if (isResponse(s)) return s;
+  const body = await readJson(request);
+  if (isResponse(body)) return body;
+  if (typeof body.on !== 'boolean') return json({ error: 'bad_request' }, 400);
+  await store.setTipsOff(env.DB, s.user.id, !body.on);
+  return json({ tips: body.on });
+}
+
+export async function handleTipsOffByLink(request, env, deps) {
+  const body = await readJson(request);
+  if (isResponse(body)) return body;
+  if (typeof body.token !== 'string' || !/^[\w-]{20,100}$/.test(body.token)) return json({ error: 'bad_request' }, 400);
+  return (await store.turnTipsOffByToken(env.DB, body.token)) ? json({ tips: false }) : json({ error: 'invalid_link' }, 400);
+}
+
 const clearCookie = '__Host-session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0';
 const codeHash = (userId, email, code) => sha256Hex(`${userId}:${email}:${code}`);
 

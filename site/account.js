@@ -4,7 +4,7 @@ import { h, messages, busy } from './ui.js';
 
 // onChanged(text) is called after the email address changes, so the page can show the new one.
 export function accountSection(me, onChanged) {
-  return [h('h2', {}, 'Your account'), changeEmail(me, onChanged), downloadData(), deleteAccount(me)];
+  return [h('h2', {}, 'Your account'), changeEmail(me, onChanged), tipsByEmail(me), downloadData(), deleteAccount(me)];
 }
 
 function changeEmail(me, onChanged) {
@@ -56,6 +56,25 @@ function changeEmail(me, onChanged) {
 
   askAddress();
   return box;
+}
+
+// The optional tips the daily job sends to people who have been away a long time. Account emails are not affected.
+function tipsByEmail(me) {
+  const msg = messages();
+  const on = h('input', { id: 'tips-on', type: 'checkbox', checked: me.tips !== false });
+  on.addEventListener('change', () => {
+    msg.clear();
+    const want = on.checked;
+    on.disabled = true;
+    api('PUT', '/me/tips', { on: want })
+      .then(() => msg.say(want ? 'You will get the occasional tip.' : 'Tips are off.'))
+      .catch(e => { on.checked = !want; msg.fail(describe(e)); })
+      .finally(() => { on.disabled = false; });
+  });
+  return h('div', { class: 'card' },
+    h('h3', {}, 'Tips by email'),
+    h('p', { class: 'muted' }, 'If you have been away for many months, we may send a couple of ideas for your ofrenda. Emails about your account, like sign-in codes, always arrive.'),
+    h('p', {}, h('label', { class: 'check', for: 'tips-on' }, on, ' Send me occasional tips')), msg.el);
 }
 
 // A plain link: the browser saves the file (the Worker sends it as an attachment) and the session cookie rides along.
