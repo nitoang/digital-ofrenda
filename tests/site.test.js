@@ -9,6 +9,7 @@ const problems = []; // page errors, browser dialogs and Content-Security-Policy
 before(async () => { browser = await engine.launch(); });
 after(async () => {
   await browser.close();
+  if (teardownNoise.length) console.log(`# ${teardownNoise.length} fetch(es) cancelled by closing a page at the end of a test (not failures)`);
   assert.deepEqual(problems, [], 'no page errors, dialogs or CSP violations anywhere');
 });
 
@@ -16,12 +17,20 @@ const DAY = 86_400_000;
 const altar = (...items) => ({ format: 'digital-ofrenda', kind: 'person', name: 'Abuela', items });
 
 // A fresh browser (own cookies) on a fresh copy of the product.
+let tearingDown = false;
+const teardownNoise = []; // cancelled requests seen while closing pages on purpose; printed, never failing
 const opened = []; // every browser context a test opened, closed when the test ends so none pile up
 async function visitor() {
   const ctx = await browser.newContext({ viewport: { width: 1000, height: 1300 }, ignoreHTTPSErrors: true }); // the test site uses a self-signed certificate
   opened.push(ctx);
   const page = await ctx.newPage();
-  page.on('pageerror', e => problems.push('pageerror: ' + e.message));
+  // WebKit reports a fetch that is cut off by its page being closed as an error ("... due to access control checks").
+  // Closing a page on purpose at the end of a test is not an app fault, so that one message is tolerated during
+  // teardown only. The same message while a test is running still fails, and every error says which phase it was in.
+  page.on('pageerror', e => {
+    if (tearingDown && /due to access control checks/.test(e.message)) { teardownNoise.push(e.message); return; }
+    problems.push(`pageerror (${tearingDown ? 'while closing' : 'while a test ran'}, at ${page.url()}): ${e.message}`);
+  });
   page.on('dialog', d => { problems.push('dialog: ' + d.message()); d.dismiss(); });
   page.on('console', m => { if (/Content Security Policy|Refused to/i.test(m.text())) problems.push('csp: ' + m.text()); });
   return { ctx, page };
@@ -54,7 +63,10 @@ async function until(fn, what = String(fn), ms = 5000) {
   }
 }
 
-const closeContexts = () => Promise.allSettled(opened.splice(0).map(c => c.close()));
+const closeContexts = async () => {
+  tearingDown = true;
+  try { await Promise.allSettled(opened.splice(0).map(c => c.close())); } finally { tearingDown = false; }
+};
 const withSite = (name, fn) => test(name, async () => {
   site = await startSite({ tls: true });
   try { await fn(); } finally { await closeContexts(); await site.close(); }
