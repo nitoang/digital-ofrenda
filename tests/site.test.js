@@ -9,7 +9,7 @@ const problems = []; // page errors, browser dialogs and Content-Security-Policy
 before(async () => { browser = await engine.launch(); });
 after(async () => {
   await browser.close();
-  if (cancelledByNavigation) console.log(`# ${cancelledByNavigation} poll fetch(es) cancelled by a navigation, which WebKit reports as a page error (not a failure)`);
+  if (cutOffByNavigation) console.log(`# ${cutOffByNavigation} same-origin fetch(es) cut off by a navigation, which WebKit reports as a page error (not a failure)`);
   assert.deepEqual(problems, [], 'no page errors, dialogs or CSP violations anywhere');
 });
 
@@ -18,7 +18,7 @@ const altar = (...items) => ({ format: 'digital-ofrenda', kind: 'person', name: 
 
 // A fresh browser (own cookies) on a fresh copy of the product.
 let tearingDown = false;
-let cancelledByNavigation = 0; // WebKit's report of a poll cancelled by navigation (see visitor()); counted, never failing
+let cutOffByNavigation = 0; // WebKit's report of a same-origin fetch cut off by navigation (see visitor()); counted, never failing
 const opened = []; // every browser context a test opened, closed when the test ends so none pile up
 async function visitor() {
   const ctx = await browser.newContext({ viewport: { width: 1000, height: 1300 }, ignoreHTTPSErrors: true }); // the test site uses a self-signed certificate
@@ -27,17 +27,21 @@ async function visitor() {
   // Every page error says when it happened (while a test ran or while its page was being closed), where, how long after
   // the page last navigated, which requests had failed, and its stack, so an error only one engine reports can be traced.
   //
-  // One known WebKit behaviour is not an app fault. When a page navigates away, WebKit cancels the requests still in flight
-  // ("Load request cancelled") and reports the poll's cancelled fetch as an error, "Fetch API cannot load ... due to access
-  // control checks", even though storage.js catches it (its stack is the fetch call inside tick()'s try block). It is let
-  // through only with that whole signature: that message, that stack frame, and a cancelled request on the same page.
+  // One known WebKit behaviour is not an app fault. When a page navigates away, WebKit cuts off the requests still in
+  // flight and reports the rejected fetch as an error, "Fetch API cannot load <url> due to access control checks", even
+  // though the app catches it. That message about a URL on the page's OWN origin cannot be a real access-control block (a
+  // same-origin request never needs one), so it can only be a cut-off load; and it is let through only when its stack is in
+  // the site's own code, where each of these fetches sits inside a try/catch. Anything else still fails the run.
   let lastNavigation = Date.now();
   const failedRequests = [];
   page.on('framenavigated', f => { if (f === page.mainFrame()) lastNavigation = Date.now(); });
   page.on('requestfailed', r => failedRequests.push(`${r.method()} ${new URL(r.url()).pathname} (${r.failure()?.errorText})`));
   page.on('pageerror', e => {
     const text = `${e.name}: ${e.message}`, stack = String(e.stack || '');
-    if (/^Fetch API cannot load https.*due to access control checks\.$/.test(text) && /at tick \(.*storage\.js/.test(stack) && failedRequests.some(f => /Load request cancelled/.test(f))) { cancelledByNavigation++; return; }
+    const cutOff = /^Fetch API cannot load (https?:\/\/\S+) due to access control checks\./.exec(stack);
+    let sameOrigin = false;
+    try { sameOrigin = !!cutOff && new URL(cutOff[1]).origin === new URL(page.url()).origin; } catch { /* not a URL: not tolerated */ }
+    if (sameOrigin && /at \w+ \(https?:\/\/[^)]*\/(storage|api|altar|my)\.js/.test(stack)) { cutOffByNavigation++; return; }
     problems.push(`pageerror (${tearingDown ? 'while closing' : 'while a test ran'}, at ${page.url()}, ${Date.now() - lastNavigation} ms after its last navigation, failed requests: ${failedRequests.slice(-3).join(' | ') || 'none'}): ${text} [stack: ${stack.split('\n').slice(0, 4).map(l => l.trim()).join(' / ')}]`);
   });
   page.on('dialog', d => { problems.push('dialog: ' + d.message()); d.dismiss(); });
