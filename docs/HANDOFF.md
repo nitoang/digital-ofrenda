@@ -7,7 +7,7 @@ check `git log` in case things have moved on.
 
 ```
 Work on the repo nitoang/digital-ofrenda. Read docs/HANDOFF.md first. Then build the remaining suggestions in the order it
-gives: #15 test gaps, #16 housekeeping, #4 deploy workflow, #13 accessibility, #12 receipts and disputes, #17 legal review.
+gives: #16 housekeeping, #4 deploy workflow, #13 accessibility, #12 receipts and disputes, #17 legal review.
 Do one at a time: build it, run the full tests, push to the designated branch (restart it from main first; force-push is
 blocked, so merge the old remote tip with `git merge -s ours` to make the push a fast-forward), then tell me before opening
 a PR. When I say "merge if CI is green", squash-merge only after all CI checks are green on the current head. Never skip or
