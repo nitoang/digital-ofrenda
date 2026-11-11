@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Playwright is the only dependency, and it is only used by the tests.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  # The versions of actions/checkout and actions/setup-node used by CI.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

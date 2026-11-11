@@ -1,6 +1,6 @@
 {
   "name": "digital-ofrenda",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "description": "A drag-and-drop remembrance altar as a web component.",
   "private": true,
   "scripts": {
