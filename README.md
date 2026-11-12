@@ -214,6 +214,13 @@ CI runs the unit tests once and the browser tests in Chromium, Firefox and WebKi
 
 `tests/site.test.js` drives the whole website in Chromium against the real Worker code (sign-in, editing, limits, co-keepers, the successor handover, hostile text, open redirects, and no policy violations). `tests/server.test.js` (the validator) and `tests/worker.test.js` (sign-in, sessions, altars, co-keepers, successor takeover and the Stripe webhook, running the real SQL on SQLite) need no browser; the Worker tests use `node:sqlite`, so Node 22 or newer. The browser tests cover the default altar, Person / Pet / Mixed, 3 vs 7 tiers and the upgrade event, Start over, multiple photos, old single-photo saves, export/import (with the two-click confirm), and sanitizing of hostile imports. They fail on any page error or browser dialog.
 
+## Accessibility
+
+- **Keyboard:** everything the mouse does has a key. In the editor, Tab reaches the tray and the items; Enter or Space on a tray button adds the item and moves focus to it; arrows move it (Shift for bigger steps), `+`/`-` resize, `[`/`]` rotate, Delete removes. Enter or Space lights a candle, picks a photo, or edits a note.
+- **Screen readers:** candles, empty and filled photo frames, and notes are announced as buttons (a candle as a toggle that is pressed when lit); other items are pictures you can move. Every change (added, moved, resized, rotated, lit, removed) is spoken through a polite status area, and moving an item says where it went. These were checked against the browser's accessibility tree, not yet by listening with a screen reader (see `docs/HANDOFF.md`).
+- **Contrast and touch:** text meets 4.5:1 against its background. On a phone, buttons and the tray are at least 44 px tall and the resize and rotate handles are larger. The candle flicker stops when the visitor asks for reduced motion.
+- **Tested automatically:** `tests/a11y.test.js` runs axe-core (WCAG 2.0 to 2.2 AA and best practices) over every page of the site, signed out and signed in, on a desktop and a phone, with the editor in each of its states and the upgrade dialog open, and checks that each page's tab order follows what you see. CI runs it in Chromium, Firefox and WebKit.
+
 ## Security
 
 - Everything that enters the altar (imports, saved data, and data from a shared store) is cleaned by the same allowlist: known item types only, clamped numbers, length-limited text, and photos only as inline `data:image/` PNG, JPEG, WebP or GIF, or (from a shared store) a path of exactly the shape `/ofrendas/<id>/photos/<64 hex characters>` (never SVG, remote URLs or any other address).

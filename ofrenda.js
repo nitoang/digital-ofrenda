@@ -172,7 +172,7 @@
     header { text-align: center; margin-bottom: 14px; }
     .name { margin: 0; font-size: 1.7rem; font-weight: normal; letter-spacing: .02em; min-height: 1.3em; }
     .dates { margin: 4px 0 0; opacity: .8; min-height: 1.2em; }
-    [contenteditable="true"]:empty::before { content: attr(data-placeholder); opacity: .45; }
+    [contenteditable="true"]:empty::before { content: attr(data-placeholder); opacity: .65; }
     [contenteditable="true"] { outline: none; border-bottom: 1px dashed rgba(253,243,227,.35); cursor: text; }
 
     .stage { position: relative; aspect-ratio: 4 / 3; container-type: inline-size; overflow: hidden;
@@ -226,7 +226,7 @@
     .kind legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
     .kind label { cursor: pointer; padding: 6px 14px; border-radius: 999px; border: 1px solid rgba(253,243,227,.4); font-size: .8rem; }
     .kind input { position: absolute; opacity: 0; pointer-events: none; }
-    .kind label:has(input:checked) { background: #e0742e; border-color: #e0742e; color: #fff; }
+    .kind label:has(input:checked) { background: #b8501a; border-color: #b8501a; color: #fff; } /* white on this is 5:1; the banner's brighter orange is only decoration */
     .kind label:has(input:focus-visible) { outline: 3px solid #ffd45c; outline-offset: 2px; }
     .petnote { margin: 8px 0 0; font-family: system-ui, sans-serif; font-size: .75rem; opacity: .8; }
     .tray { margin-top: 14px; padding: 12px; border-radius: 10px; background: #3a2158; border: 2px dashed transparent; transition: border-color .15s, background .15s; }
@@ -239,9 +239,13 @@
     .tray button:focus-visible { outline: 3px solid #ffd45c; }
     .tray button b { display: block; font-size: 1.7rem; font-weight: normal; margin-bottom: 2px; }
     .actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; font-family: system-ui, sans-serif; font-size: .8rem; }
-    .actions button { all: unset; cursor: pointer; padding: 6px 12px; border-radius: 999px; background: #e0742e; color: #fff; }
+    .actions button { all: unset; cursor: pointer; padding: 6px 12px; border-radius: 999px; background: #b8501a; color: #fff; }
     .actions button.ghost-btn { background: transparent; border: 1px solid rgba(253,243,227,.4); }
     .actions button:focus-visible { outline: 3px solid #ffd45c; }
+    @media (pointer: coarse) { /* fingers: at least 44 px to hit, as WCAG and the platform guidelines ask */
+      .tiers label, .kind label, .actions button { min-height: 44px; display: inline-flex; align-items: center; box-sizing: border-box; }
+      .tray button { min-height: 56px; }
+    }
     .hint { opacity: .65; }
     .ghost { position: fixed; z-index: 99999; pointer-events: none; transform: translate(-50%, -50%); font-size: 40px; filter: drop-shadow(0 6px 8px rgba(0,0,0,.5)); }
     .status { min-height: 1.1em; opacity: .8; }
@@ -650,7 +654,8 @@
       el.className = 'item ' + item.type + (def.candle ? ' candle' : '') + (item.lit ? ' lit' : '');
       el.dataset.id = item.id;
       el.tabIndex = 0;
-      el.setAttribute('role', 'img');
+      // Things you can press are buttons to a screen reader; the rest are pictures you can move.
+      el.setAttribute('role', def.candle || (this._editable && (item.type === 'photo' || item.type === 'note')) ? 'button' : 'img');
       if (this._editable) el.setAttribute('aria-describedby', 'hint');
 
       if (item.type === 'photo') {
@@ -690,7 +695,9 @@
 
     _label(el, item) {
       const base = ITEMS[item.type].label;
-      const extra = ITEMS[item.type].candle ? (item.lit ? ', lit' : ', unlit') : item.type === 'note' ? ': ' + (item.text ?? DEFAULT_NOTE) : '';
+      // The visible words must be in the name (WCAG 2.5.3), so an empty frame that says "Click to add a photo" is named for it.
+      const extra = item.type === 'note' ? ': ' + (item.text ?? DEFAULT_NOTE) : item.type === 'photo' && !item.src && this._editable ? ', click to add a photo' : '';
+      if (ITEMS[item.type].candle) el.setAttribute('aria-pressed', item.lit ? 'true' : 'false'); // "Candle, toggle button, pressed" says it is lit
       const look = (item.scale ? `, size ${Math.round(item.scale * 100)}%` : '') + (item.rot && !ITEMS[item.type].candle ? `, rotated ${item.rot}°` : '');
       el.setAttribute('aria-label', base + extra + look);
       el.title = base; // hover tooltip
@@ -834,12 +841,12 @@
         e.preventDefault(); this._activate(el, item); return;
       }
       if (!this._editable) return;
-      if (item.type === 'note' && (e.key === 'Enter' || e.key === 'F2')) { e.preventDefault(); this._editNote(el, item); return; }
+      if (item.type === 'note' && (activate || e.key === 'F2')) { e.preventDefault(); this._editNote(el, item); return; }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
         const next = el.nextElementSibling || el.previousElementSibling;
         this._remove(item);
-        next?.focus();
+        (next || this._trayItems.querySelector('button'))?.focus(); // never leave a keyboard user's focus on a removed element
         return;
       }
       const size = { '+': 1, '=': 1, '-': -1, '_': -1 }[e.key], turn = { ']': 1, '[': -1 }[e.key];
@@ -863,6 +870,7 @@
         item.y = clamp(item.y + d[1], 0, 100);
         this._place(el, item);
         this._save();
+        this._say(`${ITEMS[item.type].label} moved to ${Math.round(item.x)}% across, ${Math.round(item.y)}% down.`); // a screen reader cannot see where it went
       }
     }
 

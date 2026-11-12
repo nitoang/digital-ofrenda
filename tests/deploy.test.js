@@ -77,7 +77,9 @@ test('site build: --require-turnstile stops a build that has no key, and the com
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /TURNSTILE_SITE_KEY is not set/);
   assert.match(fs.readFileSync(path.join(root, 'site', 'config.js'), 'utf8'), /turnstileSiteKey: '',/, 'a refused build touches nothing');
-  assert.equal(run([], {}).status, 0, 'local builds without a key still work');
+  const copy = path.join(root, 'site', 'ofrenda.js'), had = fs.existsSync(copy);
+  try { assert.equal(run([], {}).status, 0, 'local builds without a key still work'); }
+  finally { if (!had) fs.rmSync(copy, { force: true }); } // the build copies the component into site/; do not leave it behind
 });
 
 test('secrets check: names the secrets that are missing, and treats an unreadable list as all missing', async () => {

@@ -60,3 +60,6 @@ fieldset.choices label.check { margin: 6px 0; min-height: 44px; }
 [hidden] { display: none !important; }
 .legal h2 { font-size: 1.2rem; }
 .legal ul { padding-left: 1.2rem; }
+
+/* Text for screen readers only */
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

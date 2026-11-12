@@ -632,3 +632,74 @@ test('shared photos: a photo path from the server is accepted only in its exact 
   assert.deepEqual(await el.locator('.item.photo img').evaluateAll(imgs => imgs.map(i => i.getAttribute('src'))), [sources[0]], 'one image: the exact path');
   await ctx.close();
 });
+
+// ---- accessibility ----
+test('a11y: things you press are buttons to a screen reader (a candle also says whether it is lit); the rest are pictures', async () => {
+  const { el, page, ctx } = await h.altar({ state: { format: 'digital-ofrenda', kind: 'person', tiers: 3, name: 'Abuela', items: [
+    { id: 'a', type: 'candle', x: 30, y: 60, lit: true }, { id: 'b', type: 'marigold', x: 60, y: 60 },
+    { id: 'c', type: 'note', x: 50, y: 40, text: 'Te extrañamos' }, { id: 'd', type: 'photo', x: 50, y: 25 }] } });
+  const role = id => el.locator(`.item[data-id="${id}"]`).getAttribute('role');
+  assert.deepEqual([await role('a'), await role('b'), await role('c'), await role('d')], ['button', 'img', 'button', 'button'], 'editing');
+  const candle = el.locator('.item[data-id="a"]');
+  assert.equal(await candle.getAttribute('aria-pressed'), 'true');
+  assert.equal(await candle.getAttribute('aria-label'), 'Candle', 'the name stays put; the state is aria-pressed, so it is not said twice');
+  await candle.focus();
+  await page.keyboard.press('Space');
+  assert.equal(await candle.getAttribute('aria-pressed'), 'false');
+  assert.equal(await el.locator('.status').textContent(), 'Candle unlit.');
+  // Viewing: nothing can be edited, but a candle can still be lit.
+  await el.evaluate(e => e.setAttribute('mode', 'view'));
+  assert.deepEqual([await role('a'), await role('b'), await role('c'), await role('d')], ['button', 'img', 'img', 'img'], 'viewing');
+  await ctx.close();
+});
+
+test('a11y: keyboard: moving an item says where it went, a note opens with Space too, and deleting the last item keeps focus on the page', async () => {
+  const { el, page, ctx } = await h.altar({ state: { format: 'digital-ofrenda', kind: 'person', tiers: 3, name: '', items: [{ id: 'a', type: 'marigold', x: 50, y: 50 }, { id: 'n', type: 'note', x: 30, y: 30, text: 'Hola' }] } });
+  const status = () => el.locator('.status').textContent();
+  const marigold = el.locator('.item[data-id="a"]');
+  await marigold.focus();
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await status(), 'Marigold moved to 51% across, 50% down.');
+  await page.keyboard.press('Shift+ArrowDown');
+  assert.equal(await status(), 'Marigold moved to 51% across, 55% down.');
+  await page.keyboard.press('Delete');
+  assert.equal(await status(), 'Marigold removed.');
+  assert.equal(await el.locator('.item[data-id="n"]').evaluate(e => e.matches(':focus')), true, 'focus moved to a neighbour');
+  await page.keyboard.press('Space');
+  assert.equal(await el.locator('.item[data-id="n"] .note span').getAttribute('contenteditable'), 'true', 'Space edits the note');
+  await page.keyboard.press('Enter'); // finishes editing
+  await el.locator('.item[data-id="n"]').focus();
+  await page.keyboard.press('Delete');
+  const where = await el.evaluate(e => { const a = e.shadowRoot.activeElement; return a && (a.closest('.tray-items') ? 'tray' : a.className); });
+  assert.equal(where, 'tray', 'with nothing left on the altar, focus goes to the tray, not to nowhere');
+  await ctx.close();
+});
+
+test('a11y: the colours that carry text meet the 4.5:1 contrast WCAG asks for', async () => {
+  const { el, ctx } = await h.altar();
+  const ratios = await el.evaluate(e => {
+    const parse = c => c.match(/[\d.]+/g).map(Number);
+    const lum = ([r, g, b]) => [r, g, b].map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }).reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+    const q = s => e.shadowRoot.querySelector(s);
+    const pill = q('.kind label:has(input:checked)'), action = q('.actions button');
+    return {
+      'selected type pill': ratio(parse(getComputedStyle(pill).color), parse(getComputedStyle(pill).backgroundColor)),
+      'action button': ratio(parse(getComputedStyle(action).color), parse(getComputedStyle(action).backgroundColor)),
+    };
+  });
+  for (const [what, r] of Object.entries(ratios)) assert.ok(r >= 4.5, `${what} is ${r.toFixed(2)}:1`);
+  const placeholder = await el.evaluate(e => { const n = e.shadowRoot.querySelector('.name'); return getComputedStyle(n, '::before').opacity; });
+  assert.ok(Number(placeholder) >= 0.6, 'the empty name and dates hints are not faint (they were 4.0:1)');
+  await ctx.close();
+});
+
+test('touch a11y: buttons are at least 44 px tall on a phone', { skip: TOUCH_SKIP }, async () => {
+  const { el, ctx } = await h.altar({ touch: true });
+  for (const sel of ['.actions button', '.kind label', '.tiers label', '.tray-items button']) {
+    const boxes = await el.locator(sel).evaluateAll(es => es.filter(e => e.offsetParent !== null).map(e => e.getBoundingClientRect().height));
+    assert.ok(boxes.length > 0, sel);
+    for (const hgt of boxes) assert.ok(hgt >= 44, `${sel} is ${hgt}px tall`);
+  }
+  await ctx.close();
+});

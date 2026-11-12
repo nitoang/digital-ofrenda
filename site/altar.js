@@ -72,7 +72,7 @@ function shareBox(url, kept) {
       : shareBox(location.origin + '/s/' + ((membership && membership.slug) || id)),
     membership ? h('p', {}, link('Keepers and sharing', keepersPath, { class: 'button' }))
       : (me ? null : h('p', { class: 'muted' }, 'Do you keep this ofrenda? ', link('Sign in', '/signin?next=/a/' + id), '.')));
-  const [header, main] = frame(me, tools, msg.el, el);
+  const [header, main] = frame(me, h('h1', { class: 'sr' }, 'Ofrenda'), tools, msg.el, el);
   main.classList.add('wide');
   mount(root, header, main);
 
