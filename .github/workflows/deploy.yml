@@ -1,0 +1,84 @@
+# Deploys to Cloudflare, in the order that keeps a half-finished deploy harmless:
+#   1. the same tests as every pull request   2. database migrations   3. the mailer Worker (the API Worker calls it)
+#   4. the API Worker   5. the website (Pages)   6. a smoke test of the live site
+# Nothing happens until the repository variable DEPLOY_ENABLED is "true", so merging to main is safe before setup is
+# done. Setup, variables and secrets: README, "Deploying with GitHub Actions".
+name: Deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy
+  cancel-in-progress: false   # let a deploy that has started finish; the next one waits
+
+env:
+  # Pinned, so a deploy does not change behaviour under you. Raise it on purpose and read the Wrangler changelog first.
+  WRANGLER: wrangler@4.160.1
+
+jobs:
+  tests:
+    if: vars.DEPLOY_ENABLED == 'true'
+    uses: ./.github/workflows/test.yml
+
+  deploy:
+    needs: tests
+    if: github.ref == 'refs/heads/main'   # a manual run from another branch must not deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Add required reviewers to this environment (Settings > Environments > production) to approve each deploy by hand.
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+      APP_URL: ${{ vars.APP_URL }}
+      ZONE_NAME: ${{ vars.ZONE_NAME }}
+      PHOTOS_BUCKET: ${{ vars.PHOTOS_BUCKET }}
+      STARTER_OFRENDA: ${{ vars.STARTER_OFRENDA }}
+      STRIPE_PRICE_EXTRA_PHOTOS: ${{ vars.STRIPE_PRICE_EXTRA_PHOTOS }}
+      STRIPE_PRICE_SEVEN_TIERS: ${{ vars.STRIPE_PRICE_SEVEN_TIERS }}
+      STRIPE_PRICE_PLATINUM: ${{ vars.STRIPE_PRICE_PLATINUM }}
+      ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
+      HEARTBEAT_URL: ${{ vars.HEARTBEAT_URL }}
+      TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+      PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+
+      - name: Check the settings before touching anything
+        run: |
+          missing=""
+          for n in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID D1_DATABASE_ID APP_URL ZONE_NAME TURNSTILE_SITE_KEY PAGES_PROJECT; do
+            [ -n "${!n}" ] || missing="$missing $n"
+          done
+          if [ -n "$missing" ]; then echo "::error::Not set (repository secrets or variables):$missing"; exit 1; fi
+      - name: Write the API Worker's config
+        run: node scripts/render-wrangler.mjs
+      - name: Warn about secrets that are not set yet
+        continue-on-error: true
+        run: |
+          npx --yes "$WRANGLER" secret list --config server/wrangler.toml | node scripts/check-secrets.mjs TURNSTILE_SECRET STRIPE_WEBHOOK_SECRET STRIPE_SECRET_KEY RESEND_WEBHOOK_SECRET || true
+          npx --yes "$WRANGLER" secret list --config mailer/wrangler.toml | node scripts/check-secrets.mjs RESEND_API_KEY || true
+
+      # Migrations first. They must stay compatible with the Worker that is still running until step 4.
+      - name: Apply database migrations
+        run: npx --yes "$WRANGLER" d1 migrations apply digital-ofrenda --remote --config server/wrangler.toml
+      - name: Deploy the mailer Worker
+        run: npx --yes "$WRANGLER" deploy --config mailer/wrangler.toml
+      - name: Deploy the API Worker
+        run: npx --yes "$WRANGLER" deploy --config server/wrangler.toml
+      - name: Build and deploy the website
+        run: |
+          node scripts/build-site.mjs --require-turnstile
+          npx --yes "$WRANGLER" pages deploy site --project-name "$PAGES_PROJECT" --branch main
+      - name: Smoke test the live site
+        run: node scripts/smoke.mjs "$APP_URL"

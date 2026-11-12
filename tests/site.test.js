@@ -2,7 +2,7 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { startSite } = require('./site');
-const { PNG, tmpFile, engine, BROWSER } = require('./helpers');
+const { PNG, tmpFile, engine, BROWSER, isNavigationCutOff } = require('./helpers');
 
 let browser, site;
 const problems = []; // page errors, browser dialogs and Content-Security-Policy violations, from every test
@@ -27,21 +27,14 @@ async function visitor() {
   // Every page error says when it happened (while a test ran or while its page was being closed), where, how long after
   // the page last navigated, which requests had failed, and its stack, so an error only one engine reports can be traced.
   //
-  // One known WebKit behaviour is not an app fault. When a page navigates away, WebKit cuts off the requests still in
-  // flight and reports the rejected fetch as an error, "Fetch API cannot load <url> due to access control checks", even
-  // though the app catches it. That message about a URL on the page's OWN origin cannot be a real access-control block (a
-  // same-origin request never needs one), so it can only be a cut-off load; and it is let through only when its stack is in
-  // the site's own code, where each of these fetches sits inside a try/catch. Anything else still fails the run.
+  // (A fetch cut off by a navigation, which WebKit reports as a page error, is tolerated: see isNavigationCutOff in helpers.js.)
   let lastNavigation = Date.now();
   const failedRequests = [];
   page.on('framenavigated', f => { if (f === page.mainFrame()) lastNavigation = Date.now(); });
   page.on('requestfailed', r => failedRequests.push(`${r.method()} ${new URL(r.url()).pathname} (${r.failure()?.errorText})`));
   page.on('pageerror', e => {
     const text = `${e.name}: ${e.message}`, stack = String(e.stack || '');
-    const cutOff = /^Fetch API cannot load (https?:\/\/\S+) due to access control checks\./.exec(stack);
-    let sameOrigin = false;
-    try { sameOrigin = !!cutOff && new URL(cutOff[1]).origin === new URL(page.url()).origin; } catch { /* not a URL: not tolerated */ }
-    if (sameOrigin && /at \w+ \(https?:\/\/[^)]*\/(storage|api|altar|my)\.js/.test(stack)) { cutOffByNavigation++; return; }
+    if (isNavigationCutOff(e, page.url())) { cutOffByNavigation++; return; }
     problems.push(`pageerror (${tearingDown ? 'while closing' : 'while a test ran'}, at ${page.url()}, ${Date.now() - lastNavigation} ms after its last navigation, failed requests: ${failedRequests.slice(-3).join(' | ') || 'none'}): ${text} [stack: ${stack.split('\n').slice(0, 4).map(l => l.trim()).join(' / ')}]`);
   });
   page.on('dialog', d => { problems.push('dialog: ' + d.message()); d.dismiss(); });

@@ -42,14 +42,15 @@ function readRewrites() {
 function resolveFile(pathname, rewrites) {
   let p = pathname;
   for (const r of rewrites) if (r.re.test(p)) { p = r.to; break; }
+  // The component is always the one in the repository root, never a copy left in site/ by an earlier `npm run build:site`.
+  if (p === '/ofrenda.js') return path.join(ROOT, 'ofrenda.js');
   if (p === '/') p = '/index.html';
   const candidates = [p, p + '.html', p + '/index.html'];
   for (const c of candidates) {
     const f = path.normalize(path.join(SITE, c));
     if (f.startsWith(SITE + path.sep) && fs.existsSync(f) && fs.statSync(f).isFile()) return f;
   }
-  const component = path.join(ROOT, 'ofrenda.js'); // the deploy build copies it into site/; tests read it directly
-  return p === '/ofrenda.js' ? component : null;
+  return null;
 }
 
 // The session cookie is "__Host-...; Secure", which Safari's engine (WebKit) refuses to keep on plain http://localhost
