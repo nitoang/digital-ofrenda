@@ -10,7 +10,7 @@
   <header class="top"><a class="brand" href="/">Digital Ofrenda</a><nav aria-label="Account"><a href="/my">My ofrendas</a></nav></header>
   <main id="main" class="legal">
     <h1>Privacy</h1>
-    <p class="muted">Last updated 9 November 2026</p>
+    <p class="muted">Last updated 12 November 2026</p>
     <p class="lead">Digital Ofrenda holds memories, so we keep as little about you as we can. This page says exactly what we keep, who else touches it, and how to remove it.</p>
 
     <h2>What we keep</h2>
@@ -18,29 +18,30 @@
       <li><strong>Your email address.</strong> It is how you sign in, so we store it as written (in lower case). There are no passwords. The first time you sign in we send one welcome email and start a basic ofrenda for you, which you can rename or delete.</li>
       <li><strong>When you were last active</strong> on the site. It is used for one thing: if you are the owner of an ofrenda and have been away for a very long time, someone you chose as a successor may ask to take it over, and you are told first. Signing in cancels the request.</li>
       <li><strong>Your ofrendas:</strong> the name, words, photos and arrangement you save. The words and arrangement are kept in our database and the photos in Cloudflare&rsquo;s file storage; a photo is deleted when you remove it from an ofrenda or when the ofrenda is deleted. <em>Anyone who has the link to an ofrenda can see it</em>, so share links only with people you want to see it. The owner can instead make an ofrenda <em>private</em>, so only the people who keep it can open it and every link stops working for everyone else. Search engines are asked not to list ofrendas, and a link you paste into a chat shows only a generic picture and the name on the altar, never a photo. If the owner gives an ofrenda a name in its address (like <em>/a/abuela-rosa</em>), it becomes easy to guess, and the original link keeps working too. The page shows what you saved, never who keeps it.</li>
-      <li><strong>Who keeps what:</strong> which ofrendas you own or help keep, the email addresses of people you invited or named as a successor, and the invitations you sent. When you share an ofrenda for viewing only, we email the link once and keep just a one-way hash of that address for one day, to stop the same inbox being emailed over and over. The address itself is not stored.</li>
+      <li><strong>Who keeps what:</strong> which ofrendas you own or help keep, the email addresses of people you invited or named as a successor, and the invitations you sent. Invitations stop working after 7 days, and we delete each one, with the address in it, a day after it is used, cancelled or runs out. The other people who keep the same ofrenda can see your email address on its Keepers page, and you can see theirs. When you share an ofrenda for viewing only, we email the link once and keep just a one-way hash of that address for one day, to stop the same inbox being emailed over and over. The address itself is not stored.</li>
       <li><strong>Visits to an ofrenda, when you are signed in.</strong> To decide who should look after an ofrenda if its owner hands it to someone who never signs up, we count how many days you opened it while signed in: one count per ofrenda per day, kept with your account. We never count visitors who are not signed in, and we do not record which pages you read or for how long. The count is used only for that decision, and is deleted with the ofrenda or your account.</li>
-      <li><strong>Handovers.</strong> If an owner hands an ofrenda to an email address that has no account yet, we keep that address with the waiting handover until the person signs in or the handover ends (at most 90 days), and remind them by email to sign up.</li>
-      <li><strong>Sign-in records.</strong> The sign-in link or code you ask for, session identifiers and invitation links are stored only as one-way hashes, so we cannot read them back. Codes and links stop working after 15 minutes, and old ones are cleared out regularly.</li>
+      <li><strong>Handovers.</strong> If an owner hands an ofrenda to an email address that has no account yet, we keep that address with the waiting handover until the person signs in or the handover ends (at most 90 days), and remind them by email to sign up. To limit how many handovers one account can start in a day, we keep a short log of when you started them (not who to) for one day.</li>
+      <li><strong>Sign-in records.</strong> The sign-in link or code you ask for, session identifiers and invitation links are stored only as one-way hashes, so we cannot read them back. The email address you typed is kept with the sign-in record, and the record is deleted about a day after it stops working. Codes and links stop working after 15 minutes. A session lasts 90 days from when you last used the site, or until you sign out, and is deleted then.</li>
+      <li><strong>Technical logs.</strong> Cloudflare, which hosts the site, keeps logs of requests and errors, which can include the time, the page asked for and your IP address, for a limited time. We use them to find and fix problems, and for nothing else.</li>
       <li><strong>Addresses we no longer email.</strong> If our email provider tells us a message to an address could not be delivered, or that the person marked it as spam, we remember a one-way hash of that address (not the address) and stop emailing it, except for sign-in and email-change codes you ask for yourself. This keeps our email working for everyone. It is kept even if an account is deleted, because it is about the address, not the account.</li>
       <li><strong>Payment records.</strong> Which upgrade was bought and for what, when, the amount and currency, whether it was refunded or disputed, and Stripe&rsquo;s payment reference. While your account exists the record is linked to it, so you can see your purchase history. No card detail. If you delete your account the link is removed; we keep the rest as a record of the sale.</li>
     </ul>
 
     <h2>Cookies</h2>
-    <p>One cookie, which keeps you signed in. It is needed for the site to work, so there is nothing to accept or decline. We do not use advertising or analytics cookies and we do not track you across other sites.</p>
+    <p>One cookie, which keeps you signed in. It is needed for the site to work, so there is nothing to accept or decline. While you open an emailed link, your browser may briefly keep its one-time token in session storage for that tab until it is used; it is not sent anywhere else. We do not use advertising or analytics cookies and we do not track you across other sites.</p>
 
     <h2>Who else handles your data</h2>
     <ul>
-      <li><strong>Cloudflare</strong> hosts the site, the database and the photo storage, and runs the human check on the sign-in page (Turnstile). The check looks at how your browser behaves to tell people from bots.</li>
+      <li><strong>Cloudflare</strong> hosts the site, the database and the photo storage, and runs the human check on the sign-in page (Turnstile). The check looks at how your browser behaves to tell people from bots, and we pass it your IP address.</li>
       <li><strong>Resend</strong> delivers our emails, so it sees the address it sends to and the message.</li>
-      <li><strong>Stripe</strong> takes payments on its own page. Your card details go to Stripe and never reach us. Stripe may send receipts to your email address.</li>
+      <li><strong>Stripe</strong> takes payments on its own page. Your card details go to Stripe and never reach us. Stripe emails a receipt to your email address.</li>
     </ul>
     <p>We do not sell your data and we do not share it with anyone else.</p>
 
     <h2>Your choices</h2>
     <ul>
       <li><strong>Change your email address</strong> on the <a href="/my">My ofrendas</a> page. We send a code to the new address first.</li>
-      <li><strong>Download your data</strong> on the My ofrendas page: one file with your account and every ofrenda you own or keep, including the photos and the email addresses of the people who keep each one. The file is not protected once it is on your device, so keep it somewhere safe.</li>
+      <li><strong>Download your data</strong> on the My ofrendas page: one file with your account, your purchases and every ofrenda you own or keep, including the photos and the email addresses of the people who keep each one. The file is not protected once it is on your device, so keep it somewhere safe.</li>
       <li><strong>Delete your account</strong> on the same page. It removes your account, your sign-in records, your place on other people&rsquo;s ofrendas, and the invitations to or from you. Ofrendas that other people help keep are passed on to them instead of being erased, so what you made is not lost; ofrendas nobody else keeps are deleted, and you confirm that first. Deletion is immediate and cannot be undone.</li>
       <li><strong>Delete one ofrenda</strong> from its page, if you own it.</li>
       <li><strong>Ask us</strong> for a copy of what we hold about you, or to correct it, at <a class="contact" href="mailto:support@digifrenda.duelokit.com">support@digifrenda.duelokit.com</a>.</li>

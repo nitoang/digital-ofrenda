@@ -127,6 +127,21 @@ export const purgeExpired = (db, now) => db.batch([
   stmt(db, 'DELETE FROM view_shares WHERE created_at < ?', now - 86_400_000),
 ]);
 
+// The daily job's tidy-up, so records that hold an email address or a person's activity do not outlive their use even when
+// nobody is signing in to trigger purgeExpired. Each is kept only as long as something (a rate limit, a list) still reads it:
+// ended invitations and handover counts for one day, which is the longest window any limit looks back over.
+export const pruneOld = (db, now) => {
+  const day = now - 86_400_000;
+  return db.batch([
+    stmt(db, 'DELETE FROM login_challenges WHERE expires_at < ? AND created_at < ?', day, day),
+    stmt(db, 'DELETE FROM sessions WHERE expires_at < ?', now),
+    stmt(db, 'DELETE FROM email_changes WHERE expires_at < ?', day),
+    stmt(db, 'DELETE FROM view_shares WHERE created_at < ?', day),
+    stmt(db, 'DELETE FROM invites WHERE expires_at < ? OR used_at < ? OR revoked_at < ?', day, day, day),
+    stmt(db, 'DELETE FROM handover_log WHERE at < ?', day),
+  ]);
+};
+
 // ---------- sessions ----------
 export const createSession = (db, { idHash, userId, now, ttl }) =>
   run(db, 'INSERT INTO sessions (id_hash, user_id, created_at, last_used_at, expires_at) VALUES (?, ?, ?, ?, ?)', idHash, userId, now, now, now + ttl);

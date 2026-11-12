@@ -7,7 +7,7 @@ check `git log` in case things have moved on.
 
 ```
 Work on the repo nitoang/digital-ofrenda. Read docs/HANDOFF.md first. Then build the remaining suggestions in the order it
-gives: #17 legal review.
+gives: nothing: the six suggestions are built.
 Do one at a time: build it, run the full tests, push to the designated branch (restart it from main first; force-push is
 blocked, so merge the old remote tip with `git merge -s ours` to make the push a fast-forward), then tell me before opening
 a PR. When I say "merge if CI is green", squash-merge only after all CI checks are green on the current head. Never skip or
@@ -18,7 +18,7 @@ loosen a test to get green. Be honest about what you could not verify (for examp
 
 | # | What |
 |---|---|
-| 5 | Daily cron job that prunes expired data (`server/scheduled.mjs`). It was never confirmed that expired invites are purged. |
+| 5 | Daily cron job (`server/scheduled.mjs`): successor notices, reminders, handovers, photo move. It did **not** prune old records until #17 added `pruneOld`. |
 | 6 | Photos in an R2 bucket (`server/photos.mjs`). Inactive until the bucket is bound as `PHOTOS`. |
 | 7 | Alert emails (`ALERT_EMAIL`), `GET /healthz`, a heartbeat URL (`HEARTBEAT_URL`) (`server/alerts.mjs`). |
 | 8 | Mailer retries, Resend bounce and complaint webhook, sign-in typo hint (`server/mailhealth.mjs`, `site/typos.js`). |
@@ -30,17 +30,15 @@ loosen a test to get green. Be honest about what you could not verify (for examp
 | 4 | Deploy workflow (`.github/workflows/deploy.yml`, scripts in `scripts/`, steps in the README under "Deploying with GitHub Actions"). Off until the variable `DEPLOY_ENABLED` is `true`. Checked here: the rendered config parses as TOML and `wrangler deploy --dry-run` accepts both Workers (Wrangler 4.160.1). Never run for real: it needs the owner's Cloudflare credentials. |
 | 13 | Accessibility, as far as a program can check: axe-core over every page (`tests/a11y.test.js`), contrast fixes, button roles and `aria-pressed`, announced moves, focus after delete, 44 px touch targets, an `h1` on the ofrenda page, tab-order check. Still needs people: see "Setup only the owner can do". |
 | 12 | Receipts and disputes: purchase history (`GET /me/purchases`, `/purchases` page, in the export), buyer and amount recorded (migration `0013`), partial refunds shown, `charge.dispute.*` handled (upgrade stays while open with an alert and the deadline; lost takes it back). Policy choices to confirm are listed under "Setup only the owner can do". |
+| 17 | Legal review preparation: the privacy and terms pages checked against the code and corrected, retention made true (daily `pruneOld`), and a briefing for a lawyer (`docs/LEGAL-REVIEW.md`). The legal read itself has not happened. |
 | 14 | Browser tests run in Chromium, Firefox and WebKit in CI. |
 
 ## Still to build, in the order to do them
 
-### 1. #17 Legal review
-- `site/privacy.html` and `site/terms.html` exist. They were updated as features landed, but have not had a legal read.
-- Check them against what is stored now: visit counts, hashed view-share records, hashed mail-suppression records,
-  handovers, job runs, and photos in R2. The contact address in use is `support@digifrenda.duelokit.com`.
-- Data-request handling (copy of data, deletion) is documented there; check it matches reality.
+Nothing left to build. What remains is the legal read itself (see "Setup only the owner can do").
 
 ## Setup only the owner can do
+- **Legal review:** give `docs/LEGAL-REVIEW.md`, `site/privacy.html` and `site/terms.html` to someone who can advise on your jurisdiction. It lists the decisions only you can make (who the operator is, governing law, response time for data requests) and the questions to ask. Then fill in the backup window, which was not verified.
 - **Stripe webhook events:** add `charge.dispute.created`, `charge.dispute.updated` and `charge.dispute.closed` to the existing endpoint (it now needs six events), and apply migration `0013`. The dispute payload handling (`payment_intent`, `status`, `reason`, `evidence_details.due_by`) was written from Stripe's documentation and has never met a real event: send test events with the Stripe CLI (`stripe trigger charge.dispute.created`) first.
 - **Dispute and refund policy (confirm or change):** a dispute that is open leaves the upgrade in place; a lost one removes it; a partial refund keeps it. Changing any of these is in `server/billing.mjs` (`handleDispute`) and the terms page. Also decide whether you want the stricter choice of removing the upgrade as soon as a dispute opens.
 - **Receipts:** checkout sets `receipt_email`, so Stripe emails receipts in live mode. Check your Stripe branding and receipt settings. The history page does not link to Stripe's hosted receipt page.
