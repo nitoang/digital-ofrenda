@@ -109,6 +109,7 @@ export async function runScheduled(env, deps) {
   const now = deps.now();
   try {
     await store.jobStarted(env.DB, 'daily', now);
+    await store.pruneOld(env.DB, now); // sign-in records, ended invitations and the like, so they do not wait for the next sign-in to be cleared
     await startNotices(env, deps, now);
     const claims = await store.runningClaims(env.DB, RULES.jobBatch);
     await remindOwners(env, deps, now, claims);

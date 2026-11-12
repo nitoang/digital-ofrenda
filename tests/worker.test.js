@@ -2956,3 +2956,53 @@ test('refunds and disputes arriving before the payment are remembered, with the 
   const [p] = await history(maria);
   assert.deepEqual([p.payment, p.status, p.amount, p.currency], ['pi_early', 'refunded', 900, 'usd'], 'the late payment event completes the record');
 });
+
+// ---------- retention (what the privacy page promises) ----------
+
+test('retention: the daily job clears old sign-in records, ended invitations and handover counts, and leaves live ones alone', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  const now = t.now(), db = t.db;
+  const challenge = (name, created, expires) => db.prepare('INSERT INTO login_challenges (challenge_id, link_hash, code_hash, email, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)').run(name, sha(name + 'l'), sha(name + 'c'), `${name}@example.com`, created, expires);
+  challenge('fresh', now - 60_000, now + 840_000);                 // still valid
+  challenge('justexpired', now - 20 * MIN, now - 5 * MIN);          // expired, but the rate limit still looks back an hour
+  challenge('old', now - 3 * DAY, now - 3 * DAY + 15 * MIN);        // long gone
+  const invite = (name, over) => db.prepare('INSERT INTO invites (id, token_hash, altar_id, email, invited_by, created_at, expires_at, used_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(name, sha(name), id, `${name}@example.com`, maria.id, over.created ?? now - HOUR, over.expires ?? now + 6 * DAY, over.used ?? null, over.revoked ?? null);
+  invite('pending', {});
+  invite('expiredlong', { created: now - 10 * DAY, expires: now - 3 * DAY });
+  invite('usedlong', { created: now - 5 * DAY, used: now - 3 * DAY });
+  invite('revokedlong', { created: now - 5 * DAY, revoked: now - 2 * DAY });
+  invite('usedtoday', { created: now - 2 * HOUR, used: now - HOUR });
+  db.prepare('INSERT INTO view_shares (id, altar_id, shared_by, email_hash, created_at) VALUES (?, ?, ?, ?, ?)').run('s_old', id, maria.id, sha('x'), now - 2 * DAY);
+  db.prepare('INSERT INTO view_shares (id, altar_id, shared_by, email_hash, created_at) VALUES (?, ?, ?, ?, ?)').run('s_new', id, maria.id, sha('y'), now - HOUR);
+  db.prepare('INSERT INTO handover_log (id, user_id, at) VALUES (?, ?, ?)').run('h_old', maria.id, now - 2 * DAY);
+  db.prepare('INSERT INTO handover_log (id, user_id, at) VALUES (?, ?, ?)').run('h_new', maria.id, now - HOUR);
+  db.prepare('INSERT INTO sessions (id_hash, user_id, created_at, last_used_at, expires_at) VALUES (?, ?, ?, ?, ?)').run(sha('dead'), maria.id, now - 100 * DAY, now - 100 * DAY, now - DAY);
+
+  await t.runJob();
+  const left = (table, col) => db.prepare(`SELECT ${col} c FROM ${table} ORDER BY 1`).all().map(r => r.c);
+  assert.ok(!left('login_challenges', 'challenge_id').includes('old'), 'a sign-in record from days ago (with an address in it) is gone');
+  assert.ok(left('login_challenges', 'challenge_id').includes('fresh') && left('login_challenges', 'challenge_id').includes('justexpired'), 'recent ones stay, the rate limit reads them');
+  assert.deepEqual(left('invites', 'id'), ['pending', 'usedtoday'], 'invitations that ended more than a day ago go, and the address with them');
+  assert.deepEqual(left('view_shares', 'id'), ['s_new']);
+  assert.deepEqual(left('handover_log', 'id'), ['h_new']);
+  assert.ok(!left('sessions', 'id_hash').includes(sha('dead')), 'an expired session is gone');
+  assert.equal((await maria.call('GET', '/me')).status, 200, 'and the live session is not');
+  // The limits that read these records still work after the clean-up.
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM invites WHERE email = ?').get('pending@example.com').n, 1);
+});
+
+test('retention: a run with nothing old to clear changes nothing, and a failing clean-up is reported rather than hidden', async () => {
+  const t = await setup(OPS);
+  await t.signIn('maria@example.com');
+  const before = JSON.stringify(t.db.prepare('SELECT * FROM sessions').all());
+  await t.runJob();
+  assert.equal(JSON.stringify(t.db.prepare('SELECT * FROM sessions').all()), before);
+  const real = t.env.DB.batch;
+  t.env.DB.batch = async () => { throw new Error('database is busy'); };
+  await assert.rejects(t.runJob(), /busy/);
+  t.env.DB.batch = real;
+  assert.equal((await (await t.call('GET', '/healthz', { origin: null })).json()).dailyJob.status, 'failed', 'visible on /healthz');
+});
