@@ -47,3 +47,12 @@ export async function resolveRef(ref) {
     return typeof body.id === 'string' ? body.id : null;
   } catch { return null; }
 }
+
+// An ofrenda's name for lists. Its saved state is public (or visible to its keepers, who are signed in), so this needs nothing more.
+export async function titleOf(id) {
+  try {
+    const res = await fetch('/ofrendas/' + encodeURIComponent(id), { cache: 'no-store', credentials: 'same-origin' });
+    if (res.ok) { const s = await res.json(); if (typeof s.name === 'string' && s.name.trim()) return s.name.trim(); }
+  } catch { /* fall through */ }
+  return 'Untitled ofrenda';
+}

@@ -107,6 +107,18 @@ for (const size of Object.keys(SIZES)) {
     await page.locator('h1').first().waitFor();
     await check('keepers');
 
+    await page.goto(site.url + '/purchases');
+    await page.getByText('You have not bought anything.').waitFor();
+    await check('purchase history (empty)');
+    for (const [feature, altarId] of [['sevenTiers', id], ['platinum', undefined]]) {
+      await page.evaluate(async ([feature, altarId]) => { await fetch('/checkout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ feature, altarId }) }); }, [feature, altarId]);
+      await site.pay(site.stripeCalls.at(-1));
+    }
+    await site.webhook('charge.refunded', { refunded: false, amount_refunded: 300, payment_intent: 'pi_test_1', metadata: {} });
+    await page.goto(site.url + '/purchases');
+    await page.locator('table.purchases tbody tr').nth(1).waitFor();
+    await check('purchase history');
+
     // Someone who is only looking.
     const view = await open(size);
     await view.page.goto(site.url + '/a/' + id);

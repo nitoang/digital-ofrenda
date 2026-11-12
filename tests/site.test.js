@@ -874,3 +874,42 @@ withSite('names: the owner picks a name and /a/<name> opens the same ofrenda, wi
   await stranger.page.goto(site.url + '/a/nobody-here');
   await stranger.page.getByRole('heading', { name: 'Ofrenda not found' }).waitFor();
 });
+
+withShop('purchase history: My ofrendas links to it, it lists what I bought, and a refund and a dispute show', async () => {
+  const { ctx, page } = await visitor();
+  await fakeStripePages(ctx);
+  await signIn(page, 'maria@example.com');
+  await page.goto(site.url + '/purchases');
+  await page.getByText('You have not bought anything.').waitFor();
+  const id = await startOfrenda(page);
+  await page.goto(site.url + '/my');
+  await page.getByRole('link', { name: 'Purchase history' }).click();
+  await page.getByRole('heading', { name: 'Purchase history' }).waitFor();
+
+  // Buying through the real checkout route, then Stripe's webhook for it.
+  const bought = async (feature, altarId) => {
+    const r = await page.evaluate(async ([feature, altarId]) => (await fetch('/checkout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ feature, altarId }) })).status, [feature, altarId]);
+    assert.equal(r, 200);
+    await site.pay(site.stripeCalls.at(-1));
+  };
+  await bought('sevenTiers', id);
+  await bought('platinum');
+  await page.goto(site.url + '/purchases');
+  const rows = page.locator('table.purchases tbody tr');
+  await rows.nth(1).waitFor();
+  assert.equal(await rows.count(), 2);
+  const text = await rows.evaluateAll(rs => rs.map(r => r.innerText.replace(/\s+/g, ' ')));
+  assert.ok(text.some(t => /Seven-tier altar.*\$9\.00.*Paid.*pi_test_1/.test(t)), text.join(' | '));
+  assert.ok(text.some(t => /Platinum.*Your account.*\$9\.00.*Paid.*pi_test_2/.test(t)));
+  await page.getByRole('link', { name: 'Untitled ofrenda' }).waitFor();
+  await page.getByRole('columnheader', { name: 'Payment reference' }).waitFor();
+
+  // The bank disputes one; a partial refund on the other.
+  const hook = (type, object) => site.webhook(type, object);
+  await hook('charge.dispute.created', { id: 'dp_1', payment_intent: 'pi_test_1', status: 'needs_response', reason: 'fraudulent', evidence_details: { due_by: Math.floor(Date.now() / 1000) + 86400 } });
+  await hook('charge.refunded', { refunded: false, amount_refunded: 300, payment_intent: 'pi_test_2', metadata: {} });
+  await page.reload();
+  await page.getByText('Disputed with your bank').waitFor();
+  await page.getByText('Partly refunded').waitFor();
+  await closeContexts();
+});

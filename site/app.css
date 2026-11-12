@@ -63,3 +63,15 @@ fieldset.choices label.check { margin: 6px 0; min-height: 44px; }
 
 /* Text for screen readers only */
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Purchase history */
+table.purchases { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: .95rem; }
+table.purchases th, table.purchases td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.purchases thead th { color: var(--muted); font-weight: 600; }
+table.purchases tbody th { font-weight: 600; }
+@media (max-width: 640px) { /* a phone: each purchase becomes a block, so nothing scrolls sideways */
+  table.purchases thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  table.purchases tr { display: block; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  table.purchases th, table.purchases td { display: block; border: 0; padding: 2px 0; }
+  table.purchases td::before { content: attr(data-label) ': '; color: var(--muted); }
+}

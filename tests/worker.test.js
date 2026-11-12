@@ -933,9 +933,11 @@ test('checkout: an altar upgrade is for its owner, and the Stripe request is bui
     'line_items[0][quantity]': '1',
     client_reference_id: id,
     'metadata[feature]': 'extraPhotos',
+    'metadata[user_id]': owner.id,
     'payment_intent_data[metadata][feature]': 'extraPhotos',
     'payment_intent_data[metadata][reference]': id,
     customer_email: 'owner@example.com',
+    'payment_intent_data[receipt_email]': 'owner@example.com',
     success_url: `${ORIGIN}/a/${id}?upgraded=extraPhotos`,
     cancel_url: `${ORIGIN}/a/${id}?cancelled=1`,
   });
@@ -2777,4 +2779,180 @@ test('limits: many people at once - saves to different ofrendas do not mix, and 
   assert.match(final.name, /^Version \d+$/);
   assert.equal(final.items.length, 1);
   assert.equal(final.items[0].id, `f${final.name.split(' ')[1]}`, 'name and items come from the same save');
+});
+
+// ---------- purchase history, partial refunds and disputes ----------
+
+// A checkout.session.completed as Stripe sends it when the session was made by our own /checkout (it carries who bought and what was charged).
+const bought = (buyer, feature, reference, pi, over = {}) => paidPI({ client_reference_id: reference, metadata: { feature, user_id: buyer.id }, amount_total: 900, currency: 'usd', ...over }, pi);
+const dispute = (type, pi, status, over = {}) => JSON.stringify({ type, data: { object: { id: 'dp_1', payment_intent: pi, status, reason: 'fraudulent', evidence_details: { due_by: 1_701_000_000 }, ...over } } });
+const history = async who => (await who.json('GET', '/me/purchases')).body.purchases;
+const features = (t, id) => t.db.prepare('SELECT name FROM features WHERE altar_id = ? ORDER BY name').all(id).map(r => r.name);
+
+test('purchase history: needs sign-in, lists my own purchases with what, when, how much, and nobody else\'s', async () => {
+  const t = await setup();
+  assert.equal((await t.call('GET', '/me/purchases')).status, 401);
+  const maria = await t.signIn('maria@example.com'), sam = await t.signIn('sam@example.com');
+  assert.deepEqual(await history(maria), [], 'nothing bought yet');
+  const id = await t.altarFor(maria);
+  await deliver(t, bought(maria, 'sevenTiers', id, 'pi_tiers'));
+  t.tick(DAY);
+  await deliver(t, bought(maria, 'platinum', maria.id, 'pi_plat', { amount_total: 2900 }));
+  const mine = await history(maria);
+  assert.deepEqual(mine.map(p => [p.payment, p.feature, p.ofrenda, p.amount, p.currency, p.status, p.refunded]), [
+    ['pi_plat', 'platinum', null, 2900, 'usd', 'paid', 0], ['pi_tiers', 'sevenTiers', id, 900, 'usd', 'paid', 0]], 'newest first; Platinum is for the account, an upgrade names its ofrenda');
+  assert.equal(mine[1].paid, new Date(t.now() - DAY).toISOString());
+  assert.deepEqual(await history(sam), [], 'someone else sees none of it, even a co-keeper of the same ofrenda');
+  t.db.prepare("INSERT INTO altar_members (altar_id, user_id, role, added_at) VALUES (?, ?, 'keeper', 0)").run(id, sam.id);
+  assert.deepEqual(await history(sam), []);
+  assert.ok(!JSON.stringify(mine).includes('maria@'), 'no email or card detail in it');
+});
+
+test('purchase history: purchases made before buyers were recorded still show for the account (Platinum) and the owner (ofrenda upgrades)', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com'), sam = await t.signIn('sam@example.com');
+  const id = await t.altarFor(maria);
+  await deliver(t, paidPI({ client_reference_id: id, metadata: { feature: 'extraPhotos' } }, 'pi_old_photos'));   // no user_id, no amount: an old record
+  await deliver(t, paidPI({ client_reference_id: maria.id, metadata: { feature: 'platinum' } }, 'pi_old_plat'));
+  assert.deepEqual((await history(maria)).map(p => [p.payment, p.amount, p.currency, p.status]).sort(), [['pi_old_photos', null, null, 'paid'], ['pi_old_plat', null, null, 'paid']]);
+  assert.deepEqual(await history(sam), []);
+});
+
+test('purchase history: a purchase by someone who left the account stays without a link to anyone, and the export lists mine', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  await deliver(t, bought(maria, 'extraPhotos', id, 'pi_a'));
+  const exp = (await maria.json('GET', '/me/export')).body;
+  assert.deepEqual(exp.purchases.map(p => [p.payment, p.feature, p.amount, p.status]), [['pi_a', 'extraPhotos', 900, 'paid']]);
+  assert.equal(t.db.prepare('SELECT user_id FROM purchases').get().user_id, maria.id);
+  assert.equal((await maria.call('DELETE', '/me', { email: 'maria@example.com', deleteOfrendas: true })).status, 200);
+  const row = t.db.prepare('SELECT * FROM purchases').get();
+  assert.equal(row.user_id, null, 'the link to the account is cut');
+  assert.ok(!JSON.stringify(row).includes('maria'), 'and nothing personal is left');
+  assert.equal(row.amount, 900, 'the record of the sale stays');
+});
+
+test('purchase history: a made-up or missing buyer id is ignored, not trusted', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com'), sam = await t.signIn('sam@example.com');
+  const id = await t.altarFor(maria);
+  for (const [pi, user_id] of [['pi_1', 'zzzzzzzzzzzz'], ['pi_2', '../x'], ['pi_3', undefined], ['pi_4', 5]]) {
+    assert.equal((await deliver(t, paidPI({ client_reference_id: id, metadata: { feature: 'extraPhotos', user_id } }, pi))).status, 200);
+  }
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM purchases WHERE user_id IS NOT NULL').get().n, 0);
+  assert.equal((await history(sam)).length, 0);
+  const odd = checkout({ client_reference_id: id, payment_intent: 'pi_5', metadata: { feature: 'sevenTiers', user_id: sam.id }, amount_total: -5, currency: 'US$' });
+  await deliver(t, odd);
+  const row = t.db.prepare("SELECT user_id, amount, currency FROM purchases WHERE payment_intent = 'pi_5'").get();
+  assert.deepEqual({ ...row }, { user_id: sam.id, amount: null, currency: null }, 'a bad amount or currency is dropped, not stored');
+});
+
+test('refunds: a partial refund keeps the upgrade and shows in the history; the full one later takes it back', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  await deliver(t, bought(maria, 'sevenTiers', id, 'pi_p'));
+  assert.equal((await deliver(t, refund('pi_p', { refunded: false, amount_refunded: 300 }))).status, 200);
+  assert.deepEqual(features(t, id), ['sevenTiers'], 'a partial refund leaves the upgrade (the terms say so)');
+  let [p] = await history(maria);
+  assert.deepEqual([p.status, p.refunded, p.amount], ['partly_refunded', 300, 900]);
+  await deliver(t, refund('pi_p', { refunded: false, amount_refunded: 100 }));  // an older event arriving late
+  assert.equal((await history(maria))[0].refunded, 300, 'the refunded amount only goes up');
+  await deliver(t, refund('pi_p'));
+  [p] = await history(maria);
+  assert.deepEqual([p.status, p.refunded], ['refunded', 900], 'fully refunded: the whole payment');
+  assert.deepEqual(features(t, id), []);
+  for (const odd of [{ refunded: false, amount_refunded: -1 }, { refunded: false, amount_refunded: 'lots' }, { refunded: false, payment_intent: { id: 'x' }, amount_refunded: 5 }, { refunded: false }]) {
+    assert.equal((await deliver(t, refund('pi_p', odd))).status, 200, JSON.stringify(odd));
+  }
+});
+
+test('disputes: opening one keeps the upgrade, marks the purchase, and tells the operator the deadline once, per dispute', async () => {
+  const t = await setup(OPS);
+  const maria = await t.signIn('maria@example.com');
+  const a = await t.altarFor(maria), b = await t.altarFor(maria);
+  await deliver(t, bought(maria, 'sevenTiers', a, 'pi_d1'));
+  await deliver(t, bought(maria, 'extraPhotos', b, 'pi_d2'));
+  assert.equal((await deliver(t, dispute('charge.dispute.created', 'pi_d1', 'needs_response'))).status, 200);
+  assert.equal((await deliver(t, dispute('charge.dispute.created', 'pi_d2', 'needs_response', { id: 'dp_2' }))).status, 200);
+  assert.deepEqual(features(t, a), ['sevenTiers'], 'still unlocked while it is open');
+  assert.equal((await history(maria)).find(p => p.payment === 'pi_d1').status, 'disputed');
+  const mails = await alertsTo(t);
+  assert.equal(mails.length, 2, 'two disputes, two emails: the cool-down must not swallow the second one\'s deadline');
+  assert.match(mails[0].text, /pi_d1/);
+  assert.match(mails[0].text, /by 2023-11-26/, 'the deadline');
+  assert.match(mails[0].text, /fraudulent/);
+  assert.ok(!mails.some(m => /maria/.test(m.text)), 'no personal data in the alert');
+  await deliver(t, dispute('charge.dispute.updated', 'pi_d1', 'under_review'));
+  assert.equal((await alertsTo(t)).length, 2, 'updates do not email again');
+});
+
+test('disputes: won changes nothing; lost takes the upgrade back, unless another payment still covers it', async () => {
+  const t = await setup(OPS);
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  await deliver(t, bought(maria, 'sevenTiers', id, 'pi_won'));
+  await deliver(t, dispute('charge.dispute.created', 'pi_won', 'needs_response'));
+  await deliver(t, dispute('charge.dispute.closed', 'pi_won', 'won'));
+  assert.deepEqual(features(t, id), ['sevenTiers']);
+  assert.equal((await history(maria))[0].status, 'paid', 'a dispute we won is just a payment');
+
+  await deliver(t, bought(maria, 'extraPhotos', id, 'pi_lost'));
+  await deliver(t, dispute('charge.dispute.closed', 'pi_lost', 'lost'));
+  assert.deepEqual(features(t, id), ['sevenTiers'], 'only what the lost payment bought');
+  assert.equal((await history(maria)).find(p => p.payment === 'pi_lost').status, 'dispute_lost');
+  assert.ok((await alertsTo(t)).some(m => /pi_lost.*taken back/.test(m.text)));
+  await deliver(t, dispute('charge.dispute.closed', 'pi_lost', 'lost'));
+  assert.equal((await alertsTo(t)).filter(m => /pi_lost.*taken back/.test(m.text)).length, 1, 'a repeat delivery does not email again');
+
+  // Paid twice, one payment lost: the other still stands.
+  await deliver(t, bought(maria, 'extraPhotos', id, 'pi_again'));
+  await deliver(t, bought(maria, 'extraPhotos', id, 'pi_again2'));
+  await deliver(t, dispute('charge.dispute.closed', 'pi_again', 'lost'));
+  assert.ok(features(t, id).includes('extraPhotos'), 'the second payment still covers it');
+  await deliver(t, dispute('charge.dispute.closed', 'pi_again2', 'lost'));
+  assert.ok(!features(t, id).includes('extraPhotos'));
+});
+
+test('disputes: Platinum lost in a dispute is cleared, and a late "paid" event cannot give a lost payment back', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  await deliver(t, bought(maria, 'platinum', maria.id, 'pi_pl'));
+  assert.equal((await maria.json('GET', '/me')).body.user.plan, 'platinum');
+  await deliver(t, dispute('charge.dispute.closed', 'pi_pl', 'lost'));
+  assert.equal((await maria.json('GET', '/me')).body.user.plan, null);
+  await deliver(t, bought(maria, 'platinum', maria.id, 'pi_pl'));  // Stripe retries the original delivery
+  assert.equal((await maria.json('GET', '/me')).body.user.plan, null, 'still lost');
+  assert.equal((await history(maria))[0].status, 'dispute_lost');
+});
+
+test('disputes: a dispute we cannot trace, or a hostile one, alerts and changes nothing', async () => {
+  const t = await setup(OPS);
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  await deliver(t, bought(maria, 'sevenTiers', id, 'pi_ok'));
+  for (const body of [
+    dispute('charge.dispute.created', 'pi_nobody_knows', 'needs_response'), dispute('charge.dispute.created', undefined, 'needs_response'),
+    dispute('charge.dispute.closed', { id: 'pi_ok' }, 'lost'), dispute('charge.dispute.closed', 'pi_ok', 'LOST; DROP'), dispute('charge.dispute.closed', 'pi_ok', undefined),
+    dispute('charge.dispute.closed', '../x', 'lost'), JSON.stringify({ type: 'charge.dispute.closed' }), JSON.stringify({ type: 'charge.dispute.closed', data: { object: null } }),
+  ]) assert.equal((await deliver(t, body)).status, 200, 'acknowledged: a retry would not help');
+  assert.deepEqual(features(t, id), ['sevenTiers']);
+  assert.equal(t.db.prepare("SELECT dispute_status FROM purchases WHERE payment_intent = 'pi_ok'").get().dispute_status, null);
+  assert.ok((await alertsTo(t)).some(m => /pi_nobody_knows/.test(m.text)), 'the operator hears about the one we cannot place');
+  const bad = dispute('charge.dispute.created', 'pi_ok', 'needs_response', { reason: 'x<script>alert(1)</script>y'.padEnd(500, 'z') });
+  await deliver(t, bad);
+  const text = (await alertsTo(t)).map(m => m.text).join('\n');
+  assert.ok(!text.includes('<script>'), 'what Stripe sends is never copied into the email as it is');
+});
+
+test('refunds and disputes arriving before the payment are remembered, with the buyer and amount filled in afterwards', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  await deliver(t, refund('pi_early', { metadata: { feature: 'sevenTiers', reference: id } }));
+  await deliver(t, bought(maria, 'sevenTiers', id, 'pi_early'));
+  assert.deepEqual(features(t, id), []);
+  const [p] = await history(maria);
+  assert.deepEqual([p.payment, p.status, p.amount, p.currency], ['pi_early', 'refunded', 900, 'usd'], 'the late payment event completes the record');
 });

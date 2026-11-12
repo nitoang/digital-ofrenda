@@ -53,10 +53,12 @@ export async function handleCheckout(request, env, deps) {
     'line_items[0][quantity]': '1',
     client_reference_id: reference,
     'metadata[feature]': feature,
+    'metadata[user_id]': s.user.id, // who is buying, so the purchase shows up in their history
     // Also on the payment itself, so a later refund can be traced back to what it bought.
     'payment_intent_data[metadata][feature]': feature,
     'payment_intent_data[metadata][reference]': reference,
     customer_email: s.user.email,
+    'payment_intent_data[receipt_email]': s.user.email, // Stripe emails the receipt itself
     success_url: `${env.APP_URL}${back}?upgraded=${feature}`, // says what was bought, so the page knows what to wait for
     cancel_url: `${env.APP_URL}${back}?cancelled=1`,
   });

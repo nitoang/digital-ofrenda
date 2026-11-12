@@ -23,6 +23,7 @@
 //   POST /auth/logout, POST /auth/logout-all
 //   GET  /me                                               who I am, my altars, takeovers I could start
 //   GET  /me/export                                        download everything I have, as one JSON file (see export.mjs)
+//   GET  /me/purchases                                     my purchases: what, when, how much, refunded or disputed (see purchases.mjs)
 //   DELETE /me {email, deleteOfrendas?}                    delete my account (see account.mjs)
 //   POST /me/email {email} | POST /me/email/confirm {code} change my email, proved with a code sent to the new one
 //   POST /ofrendas                                         create one (free accounts: RULES.freeAltars)
@@ -61,6 +62,7 @@ import * as handover from './handover.mjs';
 import { runScheduled } from './scheduled.mjs';
 import * as account from './account.mjs';
 import { handleExport } from './export.mjs';
+import { handlePurchases } from './purchases.mjs';
 import { handleResendWebhook, suppressing } from './mailhealth.mjs';
 import { makeAlert, routeShape, handleHealth } from './alerts.mjs';
 import { handlePreview } from './preview.mjs';
@@ -81,6 +83,7 @@ const ROUTES = [
   ['POST', /^\/auth\/logout-all$/, auth.handleLogoutEverywhere],
   ['GET', /^\/me$/, altars.handleMe],
   ['GET', /^\/me\/export$/, handleExport],
+  ['GET', /^\/me\/purchases$/, handlePurchases],
   ['DELETE', /^\/me$/, account.handleDeleteAccount],
   ['POST', /^\/me\/email$/, account.handleStartEmailChange],
   ['POST', /^\/me\/email\/confirm$/, account.handleConfirmEmailChange],

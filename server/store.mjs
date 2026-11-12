@@ -66,16 +66,35 @@ export const applyEmailChange = (db, { userId, newEmail, keepSession }) => db.ba
   stmt(db, 'DELETE FROM sessions WHERE user_id = ? AND id_hash != ?', userId, keepSession),
 ]);
 
-// ---------- purchases and refunds ----------
-export const recordPurchase = (db, { paymentIntent, feature, reference, now }) =>
-  run(db, 'INSERT OR IGNORE INTO purchases (payment_intent, feature, reference, paid_at) VALUES (?, ?, ?, ?)', paymentIntent, feature, reference, now);
-export const getPurchase = (db, paymentIntent) => one(db, 'SELECT feature, reference, refunded_at FROM purchases WHERE payment_intent = ?', paymentIntent);
+// ---------- purchases, refunds and disputes ----------
+// user_id only counts when that account exists (a purchase made by someone who has since left, or an id that was never an account, is stored without one).
+export const recordPurchase = (db, { paymentIntent, feature, reference, now, userId = null, amount = null, currency = null }) =>
+  run(db, 'INSERT OR IGNORE INTO purchases (payment_intent, feature, reference, paid_at, user_id, amount, currency) VALUES (?, ?, ?, ?, (SELECT id FROM users WHERE id = ?), ?, ?)',
+    paymentIntent, feature, reference, now, userId, amount, currency);
+// A refund can arrive before its payment (billing.mjs writes a placeholder); the payment then fills in what it knows.
+export const completePurchase = (db, { paymentIntent, now, userId = null, amount = null, currency = null }) =>
+  run(db, 'UPDATE purchases SET paid_at = ?, user_id = COALESCE(user_id, (SELECT id FROM users WHERE id = ?)), amount = COALESCE(amount, ?), currency = COALESCE(currency, ?) WHERE payment_intent = ?',
+    now, userId, amount, currency, paymentIntent);
+export const getPurchase = (db, paymentIntent) => one(db, 'SELECT feature, reference, refunded_at, dispute_status FROM purchases WHERE payment_intent = ?', paymentIntent);
 export const markRefunded = (db, paymentIntent, now) =>
   run(db, 'UPDATE purchases SET refunded_at = ? WHERE payment_intent = ? AND refunded_at IS NULL', now, paymentIntent);
+// Only ever goes up, so an old event delivered late cannot lower what was refunded.
+export const noteRefundedAmount = (db, paymentIntent, amountRefunded) =>
+  run(db, 'UPDATE purchases SET amount_refunded = MAX(amount_refunded, ?) WHERE payment_intent = ?', amountRefunded, paymentIntent);
+export const markDispute = (db, paymentIntent, status, now) =>
+  run(db, 'UPDATE purchases SET dispute_status = ?, disputed_at = COALESCE(disputed_at, ?) WHERE payment_intent = ?', status, now, paymentIntent);
+// Payments that still stand behind an upgrade: not refunded in full, and not lost in a dispute.
 export async function countUnrefunded(db, feature, reference) {
-  const r = await one(db, 'SELECT COUNT(*) AS n FROM purchases WHERE feature = ? AND reference = ? AND refunded_at IS NULL', feature, reference);
+  const r = await one(db, "SELECT COUNT(*) AS n FROM purchases WHERE feature = ? AND reference = ? AND refunded_at IS NULL AND COALESCE(dispute_status, '') != 'lost'", feature, reference);
   return r ? Number(r.n) : 0;
 }
+// A person's own purchases: the ones recorded with their account, plus older ones from before buyers were recorded
+// (Platinum names the account; an ofrenda upgrade names the ofrenda, so it counts for someone who owns it now).
+export const listPurchasesFor = (db, userId) => all(db,
+  `SELECT payment_intent, feature, reference, paid_at, amount, currency, amount_refunded, refunded_at, dispute_status FROM purchases
+   WHERE user_id = ? OR (user_id IS NULL AND ((feature = 'platinum' AND reference = ?)
+     OR (feature != 'platinum' AND reference IN (SELECT altar_id FROM altar_members WHERE user_id = ? AND role = 'owner'))))
+   ORDER BY paid_at DESC, payment_intent LIMIT 200`, userId, userId, userId);
 export const removeFeature = (db, altarId, name) => run(db, 'DELETE FROM features WHERE altar_id = ? AND name = ?', altarId, name);
 
 // ---------- sign-in ----------

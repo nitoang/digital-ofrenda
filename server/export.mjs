@@ -11,6 +11,7 @@ import { json, isResponse } from './util.mjs';
 import * as store from './store.mjs';
 import { requireUser } from './auth.mjs';
 import { inlinePhotos } from './photos.mjs';
+import { describePurchase } from './purchases.mjs';
 
 const iso = ms => (ms == null ? null : new Date(ms).toISOString());
 
@@ -44,6 +45,7 @@ export async function handleExport(request, env, deps) {
   const body = {
     format: 'digital-ofrenda-account-export', version: 1, exported: iso(now),
     account: { id: user.id, email: user.email, plan: user.plan ?? null, created: iso(await store.getUserCreated(env.DB, user.id)), lastSeen: iso(user.last_seen_at) },
+    purchases: (await store.listPurchasesFor(env.DB, user.id)).map(describePurchase),
     ofrendas,
   };
   const day = iso(now).slice(0, 10);
