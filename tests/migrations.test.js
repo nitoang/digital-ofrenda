@@ -60,6 +60,7 @@ const seed = {
   },
   8: db => db.prepare("INSERT INTO altar_visits (altar_id, user_id, days, last_day) VALUES ('altar-one', 'u2', 4, 19675)").run(),
   10: db => db.prepare("INSERT INTO mail_suppressions (email_hash, reason, created_at) VALUES (?, 'bounce', ?)").run(sha('gone@example.com'), T),
+  13: db => db.prepare("UPDATE purchases SET user_id = 'u1', amount = 900, currency = 'usd' WHERE payment_intent = 'pi_1'").run(),
   11: db => {
     db.prepare("INSERT INTO job_runs (name, started_at, ok_at) VALUES ('daily', ?, ?)").run(T, T + 3);
     db.prepare("INSERT INTO alerts (kind, last_sent_at, suppressed) VALUES ('server_error', ?, 2)").run(T);
@@ -114,6 +115,8 @@ test('migrations: columns added later give old rows the value the Worker assumes
   assert.deepEqual(row(db, "SELECT inactive_ms, auto_transfer FROM successors WHERE altar_id = 'altar-one'"), { inactive_ms: 365 * 86_400_000, auto_transfer: 1 }, '0009: a year, automatic, as before');
   assert.deepEqual(row(db, "SELECT auto, reminders_sent FROM claims WHERE altar_id = 'altar-one'"), { auto: 0, reminders_sent: 0 }, '0009: a request made by hand, no reminders yet');
   assert.equal(row(db, "SELECT reminders_sent n FROM handovers WHERE altar_id = 'altar-two'").n, 0);
+  assert.deepEqual(row(db, "SELECT user_id, amount, currency, amount_refunded, dispute_status, disputed_at FROM purchases WHERE payment_intent = 'pi_2'"),
+    { user_id: null, amount: null, currency: null, amount_refunded: 0, dispute_status: null, disputed_at: null }, '0013: old payments have no buyer or amount, and nothing refunded or disputed');
   assert.equal(row(db, "SELECT visibility v FROM altars WHERE id = 'altar-one'").v, 'link', '0012: every existing ofrenda stays reachable by its link');
   assert.equal(row(db, "SELECT visibility v FROM altars WHERE id = 'altar-two'").v, 'link');
 });
@@ -145,6 +148,8 @@ test('migrations: deleting a user or an ofrenda after the upgrade still cascades
   for (const t of ['altar_members', 'features', 'invites', 'successors', 'claims', 'altar_slugs', 'view_shares', 'altar_visits']) {
     assert.equal(row(db, `SELECT COUNT(*) n FROM ${t} WHERE altar_id = 'altar-one'`).n, 0, t);
   }
+  db.prepare("DELETE FROM users WHERE id = 'u1'").run();
+  assert.deepEqual(row(db, "SELECT user_id, amount FROM purchases WHERE payment_intent = 'pi_1'"), { user_id: null, amount: 900 }, '0013: leaving cuts the link to the buyer and keeps the sale');
   db.prepare("DELETE FROM users WHERE id = 'u2'").run();
   for (const t of ['sessions', 'email_changes', 'handovers', 'handover_log']) {
     assert.equal(row(db, `SELECT COUNT(*) n FROM ${t} WHERE ${t === 'handovers' ? 'from_user_id' : 'user_id'} = 'u2'`).n, 0, t);

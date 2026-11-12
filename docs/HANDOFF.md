@@ -7,7 +7,7 @@ check `git log` in case things have moved on.
 
 ```
 Work on the repo nitoang/digital-ofrenda. Read docs/HANDOFF.md first. Then build the remaining suggestions in the order it
-gives: #12 receipts and disputes, #17 legal review.
+gives: #17 legal review.
 Do one at a time: build it, run the full tests, push to the designated branch (restart it from main first; force-push is
 blocked, so merge the old remote tip with `git merge -s ours` to make the push a fast-forward), then tell me before opening
 a PR. When I say "merge if CI is green", squash-merge only after all CI checks are green on the current head. Never skip or
@@ -29,23 +29,21 @@ loosen a test to get green. Be honest about what you could not verify (for examp
 | 16 | Housekeeping: README intro, version `0.9.0`, `CHANGELOG.md`, Dependabot (npm and Actions), a committed `package-lock.json` (CI uses `npm ci`), and an `audit` CI job that also runs weekly. Publishing `ofrenda.js` as a package was left out on purpose: the licence is all rights reserved and `package.json` is `private`. |
 | 4 | Deploy workflow (`.github/workflows/deploy.yml`, scripts in `scripts/`, steps in the README under "Deploying with GitHub Actions"). Off until the variable `DEPLOY_ENABLED` is `true`. Checked here: the rendered config parses as TOML and `wrangler deploy --dry-run` accepts both Workers (Wrangler 4.160.1). Never run for real: it needs the owner's Cloudflare credentials. |
 | 13 | Accessibility, as far as a program can check: axe-core over every page (`tests/a11y.test.js`), contrast fixes, button roles and `aria-pressed`, announced moves, focus after delete, 44 px touch targets, an `h1` on the ofrenda page, tab-order check. Still needs people: see "Setup only the owner can do". |
+| 12 | Receipts and disputes: purchase history (`GET /me/purchases`, `/purchases` page, in the export), buyer and amount recorded (migration `0013`), partial refunds shown, `charge.dispute.*` handled (upgrade stays while open with an alert and the deadline; lost takes it back). Policy choices to confirm are listed under "Setup only the owner can do". |
 | 14 | Browser tests run in Chromium, Firefox and WebKit in CI. |
 
 ## Still to build, in the order to do them
 
-### 1. #12 Receipts and disputes
-- The `purchases` table holds `payment_intent`, `feature`, `reference` and `refunded_at`. It does not record who bought.
-- Only a full `charge.refunded` is handled (`server/billing.mjs`). Partial refunds are ignored. Disputes and chargebacks
-  are not handled.
-- To add: a purchase-history page, and handling for `charge.dispute.*` events.
-
-### 2. #17 Legal review
+### 1. #17 Legal review
 - `site/privacy.html` and `site/terms.html` exist. They were updated as features landed, but have not had a legal read.
 - Check them against what is stored now: visit counts, hashed view-share records, hashed mail-suppression records,
   handovers, job runs, and photos in R2. The contact address in use is `support@digifrenda.duelokit.com`.
 - Data-request handling (copy of data, deletion) is documented there; check it matches reality.
 
 ## Setup only the owner can do
+- **Stripe webhook events:** add `charge.dispute.created`, `charge.dispute.updated` and `charge.dispute.closed` to the existing endpoint (it now needs six events), and apply migration `0013`. The dispute payload handling (`payment_intent`, `status`, `reason`, `evidence_details.due_by`) was written from Stripe's documentation and has never met a real event: send test events with the Stripe CLI (`stripe trigger charge.dispute.created`) first.
+- **Dispute and refund policy (confirm or change):** a dispute that is open leaves the upgrade in place; a lost one removes it; a partial refund keeps it. Changing any of these is in `server/billing.mjs` (`handleDispute`) and the terms page. Also decide whether you want the stricter choice of removing the upgrade as soon as a dispute opens.
+- **Receipts:** checkout sets `receipt_email`, so Stripe emails receipts in live mode. Check your Stripe branding and receipt settings. The history page does not link to Stripe's hosted receipt page.
 - **Accessibility with real assistive technology:** nobody has yet listened to the editor with a screen reader (VoiceOver on iPhone and Mac, TalkBack, NVDA or JAWS) or used it by touch on real phones and tablets. Everything here was checked with axe and the browser's accessibility tree. Things to listen for: whether the long keyboard hint read on every focused item is too much (it is the `aria-describedby` on each item; a shorter per-item hint is the likely fix), whether the status messages are heard, and whether drag-free use is practical for someone who cannot hold a pointer.
 - **Deploy workflow:** follow the README steps (Cloudflare resources, Worker secrets, two GitHub secrets, the variables, then `DEPLOY_ENABLED`). The first real run is untested: expect to fix small things, and use the `production` environment's approval so nothing deploys unseen. Check `PAGES_PROJECT` exists and that the API token's permissions are enough.
 - **Stripe:** an end-to-end test-mode run with the Stripe CLI and a test card.

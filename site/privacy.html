@@ -23,7 +23,7 @@
       <li><strong>Handovers.</strong> If an owner hands an ofrenda to an email address that has no account yet, we keep that address with the waiting handover until the person signs in or the handover ends (at most 90 days), and remind them by email to sign up.</li>
       <li><strong>Sign-in records.</strong> The sign-in link or code you ask for, session identifiers and invitation links are stored only as one-way hashes, so we cannot read them back. Codes and links stop working after 15 minutes, and old ones are cleared out regularly.</li>
       <li><strong>Addresses we no longer email.</strong> If our email provider tells us a message to an address could not be delivered, or that the person marked it as spam, we remember a one-way hash of that address (not the address) and stop emailing it, except for sign-in and email-change codes you ask for yourself. This keeps our email working for everyone. It is kept even if an account is deleted, because it is about the address, not the account.</li>
-      <li><strong>Payment records.</strong> Which upgrade was bought and for what, with Stripe&rsquo;s payment reference. No name, email or card detail. We keep these as a record of the sale even if you delete your account.</li>
+      <li><strong>Payment records.</strong> Which upgrade was bought and for what, when, the amount and currency, whether it was refunded or disputed, and Stripe&rsquo;s payment reference. While your account exists the record is linked to it, so you can see your purchase history. No card detail. If you delete your account the link is removed; we keep the rest as a record of the sale.</li>
     </ul>
 
     <h2>Cookies</h2>

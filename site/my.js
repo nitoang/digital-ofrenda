@@ -1,19 +1,10 @@
-import { api, getMe, describe } from './api.js';
+import { api, getMe, describe, titleOf } from './api.js';
 import { h, mount, frame, messages, link, date, signOut, busy } from './ui.js';
 import { showUpgrade } from './upgrade.js';
 import { accountSection } from './account.js';
 import { purchaseReturn, waitUntil, WAITING, SLOW, CANCELLED } from './purchase.js';
 
 const root = document.getElementById('app');
-
-// An altar's name for lists. Its saved state is public, so no sign-in is needed to read it.
-async function titleOf(id) {
-  try {
-    const res = await fetch('/ofrendas/' + encodeURIComponent(id), { cache: 'no-store' });
-    if (res.ok) { const s = await res.json(); if (typeof s.name === 'string' && s.name.trim()) return s.name.trim(); }
-  } catch { /* fall through */ }
-  return 'Untitled ofrenda';
-}
 
 async function render(note) {
   let me;
@@ -49,6 +40,7 @@ async function render(note) {
   mount(root, frame(me,
     h('h1', {}, 'My ofrendas', me.plan === 'platinum' ? h('span', { class: 'badge' }, 'Platinum') : null),
     h('p', {}, create), msg.el, mine, heirs,
+    me.altars.length || me.plan === 'platinum' ? h('p', {}, link('Purchase history', '/purchases')) : null,
     h('p', { class: 'actions' }, signOutButton(false), signOutButton(true)),
     accountSection(me, text => render(text))));
 }

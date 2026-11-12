@@ -80,6 +80,7 @@ async function startSite({ env: envOver = {}, port = 0, onMail, stripe = false, 
   let offset = 0;
   const env = { DB: d1(), ...(photos ? { PHOTOS: fakeR2() } : {}), APP_URL: 'http://localhost', TURNSTILE_DISABLED: '1', STRIPE_WEBHOOK_SECRET: 'whsec_test', ...(stripe ? STRIPE_ENV : {}), ...envOver };
   const stripeCalls = [];
+  let payments = 0;
   const fakeFetch = async (url, init) => {
     if (!String(url).startsWith('https://api.stripe.com/')) return fetch(url, init);
     stripeCalls.push(Object.fromEntries(init.body));
@@ -133,13 +134,18 @@ async function startSite({ env: envOver = {}, port = 0, onMail, stripe = false, 
   return {
     url: origin, env, sent, store, RULES, db: env.DB.raw, headers, stripeCalls,
     tick: ms => { offset += ms; },
-    // Stripe telling the webhook that the person paid for the checkout session described by `form`.
-    async pay(form, type = 'checkout.session.completed') {
-      const body = JSON.stringify({ type, data: { object: { payment_status: 'paid', client_reference_id: form.client_reference_id, metadata: { feature: form['metadata[feature]'] } } } });
+    // Any signed Stripe event, as Stripe would post it.
+    async webhook(type, object) {
+      const body = JSON.stringify({ type, data: { object } });
       const t = Math.floor((Date.now() + offset) / 1000);
       const mac = crypto.createHmac('sha256', 'whsec_test').update(`${t}.${body}`).digest('hex');
       const r = await handler(new Request(origin + '/stripe/webhook', { method: 'POST', headers: { 'stripe-signature': `t=${t},v1=${mac}` }, body }), env);
       if (!r.ok) throw new Error('webhook refused: ' + r.status);
+    },
+    // Stripe telling the webhook that the person paid for the checkout session described by `form`.
+    pay(form, type = 'checkout.session.completed') {
+      return this.webhook(type, { payment_status: 'paid', client_reference_id: form.client_reference_id, payment_intent: 'pi_test_' + (++payments),
+        amount_total: 900, currency: 'usd', metadata: { feature: form['metadata[feature]'], user_id: form['metadata[user_id]'] } });
     },
     // The 6-digit code in the newest mail to `email` after index `from`.
     codeFor: (email, from = 0) => until(() => {

@@ -18,6 +18,7 @@ import * as store from './store.mjs';
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const PAID_EVENTS = ['checkout.session.completed', 'checkout.session.async_payment_succeeded'];
 const REFUND_EVENTS = ['charge.refunded'];
+const DISPUTE_EVENTS = ['charge.dispute.created', 'charge.dispute.updated', 'charge.dispute.closed'];
 const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 
 // Stripe signs "<timestamp>.<raw body>" with HMAC-SHA256; the header looks like "t=...,v1=...,v1=...".
@@ -47,7 +48,14 @@ export async function handleStripe(request, env, deps) {
     const pi = typeof s.payment_intent === 'string' && ID_RE.test(s.payment_intent) ? s.payment_intent : null;
     // Stripe does not promise order. A "paid" event that turns up after the refund of the same payment (a late retry)
     // must not hand the upgrade back, so a payment we already know was refunded unlocks nothing.
-    if (known && pi && (await store.getPurchase(env.DB, pi))?.refunded_at) return json({ received: true });
+    const buyer = typeof s.metadata?.user_id === 'string' && ID_RE.test(s.metadata.user_id) ? s.metadata.user_id : null;
+    const amount = Number.isSafeInteger(s.amount_total) && s.amount_total >= 0 ? s.amount_total : null;
+    const currency = typeof s.currency === 'string' && /^[a-z]{3}$/i.test(s.currency) ? s.currency.toLowerCase() : null;
+    const before = known && pi ? await store.getPurchase(env.DB, pi) : null;
+    if (before && (before.refunded_at || before.dispute_status === 'lost')) { // refunded, or lost to the bank, before this event arrived
+      await store.completePurchase(env.DB, { paymentIntent: pi, now: deps.now(), userId: buyer, amount, currency });
+      return json({ received: true });
+    }
     let ok = known; // idempotent: Stripe may deliver twice
     if (known && feature === 'platinum') ok = await store.setPlan(env.DB, s.client_reference_id, 'platinum');
     else if (known) ok = await store.grantFeature(env.DB, s.client_reference_id, feature, deps.now());
@@ -56,10 +64,16 @@ export async function handleStripe(request, env, deps) {
       console.error('paid checkout for something that does not exist:', feature, s.client_reference_id);
       deps.alert?.('paid_not_delivered', `Stripe says a checkout was paid (payment ${typeof s.payment_intent === 'string' ? s.payment_intent : 'unknown'}) but it unlocked nothing: feature "${String(feature).slice(0, 30)}", reference "${String(s.client_reference_id).slice(0, 30)}". Check it in Stripe and refund or fix it by hand.`);
     } else if (pi) {
-      await store.recordPurchase(env.DB, { paymentIntent: pi, feature, reference: s.client_reference_id, now: deps.now() });
+      await store.recordPurchase(env.DB, { paymentIntent: pi, feature, reference: s.client_reference_id, now: deps.now(), userId: buyer, amount, currency });
     }
   } else if (REFUND_EVENTS.includes(event?.type) && s?.refunded === true) {
     await handleRefund(env, deps, s);
+  } else if (REFUND_EVENTS.includes(event?.type) && Number.isSafeInteger(s?.amount_refunded) && s.amount_refunded > 0) {
+    // A partial refund: the upgrade stays (the terms say so), but the purchase history shows the money that went back.
+    const pi = typeof s.payment_intent === 'string' && ID_RE.test(s.payment_intent) ? s.payment_intent : null;
+    if (pi) await store.noteRefundedAmount(env.DB, pi, s.amount_refunded);
+  } else if (DISPUTE_EVENTS.includes(event?.type)) {
+    await handleDispute(env, deps, event.type, s);
   }
   return json({ received: true });
 }
@@ -79,7 +93,37 @@ async function handleRefund(env, deps, charge) {
   // A refund that arrives first is written down too, so the "paid" event that follows it cannot unlock anything.
   if (pi && !purchase) await store.recordPurchase(env.DB, { paymentIntent: pi, feature, reference, now: deps.now() });
   if (pi) await store.markRefunded(env.DB, pi, deps.now());
-  if ((await store.countUnrefunded(env.DB, feature, reference)) > 0) return; // another payment still covers it
+  await takeBack(env, feature, reference);
+}
+
+// Takes away what a payment bought, unless another payment that still stands covers the same thing.
+async function takeBack(env, feature, reference) {
+  if ((await store.countUnrefunded(env.DB, feature, reference)) > 0) return;
   if (feature === 'platinum') await store.clearPlan(env.DB, reference);
   else await store.removeFeature(env.DB, reference, feature);
+}
+
+// A customer asked their bank for the money back. While it is open the upgrade stays and the operator is told, because
+// there is a deadline to answer in Stripe's dashboard. If the bank rules against us ('lost') the money is gone, so the
+// upgrade goes, as with a refund. Each dispute has its own alert kind, so a second one within the cool-down is not swallowed (the deadline is real). 'won' and the rest change nothing. A dispute that ends in a refund arrives as charge.refunded too.
+async function handleDispute(env, deps, type, d) {
+  const pi = typeof d?.payment_intent === 'string' && ID_RE.test(d.payment_intent) ? d.payment_intent : null;
+  const status = typeof d?.status === 'string' && /^[a-z_]{1,40}$/.test(d.status) ? d.status : null;
+  const purchase = pi && status ? await store.getPurchase(env.DB, pi) : null;
+  if (!purchase) {
+    console.error('dispute for a payment we cannot trace:', pi);
+    deps.alert?.(`dispute_untraced_${pi || 'unknown'}`, `Stripe reports a dispute (${pi || 'no payment id'}) on a payment we have no record of. Look at it in Stripe: there is a deadline to respond.`);
+    return; // 200 anyway: a retry would not help
+  }
+  const wasLost = purchase.dispute_status === 'lost';
+  await store.markDispute(env.DB, pi, status, deps.now());
+  const reason = String(d.reason || 'unknown').replace(/[^a-z_]/g, '').slice(0, 40);
+  if (type === 'charge.dispute.created') {
+    const due = Number.isSafeInteger(d.evidence_details?.due_by) ? new Date(d.evidence_details.due_by * 1000).toISOString().slice(0, 10) : 'see Stripe';
+    deps.alert?.(`dispute_opened_${pi}`, `A customer disputed payment ${pi} (reason: ${reason}). The upgrade stays while it is open. Respond with evidence in Stripe by ${due}.`);
+  }
+  if (status === 'lost') {
+    if (!wasLost) deps.alert?.(`dispute_lost_${pi}`, `The dispute on payment ${pi} was lost, so the upgrade it bought was taken back.`);
+    await takeBack(env, purchase.feature, purchase.reference);
+  }
 }
