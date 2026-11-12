@@ -6,7 +6,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { startSite } = require('./site');
-const { engine, PNG } = require('./helpers');
+const { engine, PNG, isNavigationCutOff } = require('./helpers');
 
 const axeSource = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
 const TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'];
@@ -28,7 +28,7 @@ async function violations(page) {
 async function open(size) {
   const ctx = await browser.newContext({ viewport: SIZES[size], ignoreHTTPSErrors: true });
   const page = await ctx.newPage();
-  page.on('pageerror', e => problems.push('pageerror: ' + e.message));
+  page.on('pageerror', e => { if (!isNavigationCutOff(e, page.url())) problems.push('pageerror: ' + e.name + ': ' + e.message + '\n' + e.stack); }); // WebKit's cut-off fetches on navigation are not faults
   page.on('dialog', d => { problems.push('dialog: ' + d.message()); d.dismiss(); });
   page.on('console', m => { if (/Content Security Policy|Refused to/i.test(m.text())) problems.push('csp: ' + m.text()); });
   return { ctx, page };

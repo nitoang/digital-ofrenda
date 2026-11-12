@@ -66,4 +66,17 @@ function tmpFile(name, contents) {
   return p;
 }
 
-module.exports = { launch, url, PNG, tmpFile, solidPng, BROWSER, engine, TOUCH_SKIP };
+// One known WebKit behaviour is not an app fault. When a page navigates away, WebKit cuts off the requests still in
+// flight and reports the rejected fetch as a page error, "Fetch API cannot load <url> due to access control checks",
+// even though the app catches it. A message about a URL on the page's OWN origin cannot be a real access-control block
+// (a same-origin request never needs one), so it can only be a cut-off load; and it is let through only when its stack
+// is in the site's own code, where each of these fetches sits inside a try/catch. Anything else still fails the run.
+function isNavigationCutOff(error, pageUrl) {
+  const stack = String(error.stack || '');
+  const cutOff = /^Fetch API cannot load (https?:\/\/\S+) due to access control checks\./.exec(stack);
+  let sameOrigin = false;
+  try { sameOrigin = !!cutOff && new URL(cutOff[1]).origin === new URL(pageUrl).origin; } catch { /* not a URL: not tolerated */ }
+  return sameOrigin && /at \w+ \(https?:\/\/[^)]*\/(storage|api|altar|my)\.js/.test(stack);
+}
+
+module.exports = { launch, url, PNG, tmpFile, solidPng, BROWSER, engine, TOUCH_SKIP, isNavigationCutOff };
