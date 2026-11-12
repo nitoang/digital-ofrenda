@@ -2,7 +2,7 @@
 
 An interactive, drag-and-drop remembrance altar as a single embeddable web component (`<digital-ofrenda>`).
 
-Phase 1 prototype: no dependencies, saves to the browser's localStorage.
+The component has no dependencies and saves to the browser's localStorage by default. Around it sits a complete example of accounts, sharing, payments and a website, built for Cloudflare (Workers, D1, R2, Pages) and described below. Version 0.9.0: feature complete and fully tested, but not yet deployed; see [CHANGELOG.md](CHANGELOG.md) and [docs/HANDOFF.md](docs/HANDOFF.md) for what is left.
 
 ```html
 <script src="ofrenda.js"></script>
@@ -209,7 +209,7 @@ CI runs the unit tests once and the browser tests in Chromium, Firefox and WebKi
   `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'`.
   Add `connect-src` for your own backend if you use shared storage, and set `frame-ancestors` as an HTTP header (a `<meta>` tag can't).
 - `shared.html` runs inside the claude.ai artifact host, which sets its own policy, so it has no CSP tag of its own.
-- GitHub Actions runs the unit tests and the browser tests (Chromium, Firefox, WebKit) on every pull request.
+- GitHub Actions runs the unit tests and the browser tests (Chromium, Firefox, WebKit) on every pull request, and `npm audit` checks the one development dependency (Playwright) for known vulnerabilities on every pull request and every week. Dependabot opens pull requests for outdated npm packages and GitHub Actions.
 - To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## License

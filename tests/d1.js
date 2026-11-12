@@ -3,10 +3,12 @@ const { DatabaseSync } = require('node:sqlite');
 const fs = require('node:fs');
 const path = require('node:path');
 
-function d1() {
-  const db = new DatabaseSync(':memory:');
-  const dir = path.join(__dirname, '..', 'server', 'migrations');
-  for (const f of fs.readdirSync(dir).sort()) db.exec(fs.readFileSync(path.join(dir, f), 'utf8'));
+const MIGRATIONS = path.join(__dirname, '..', 'server', 'migrations');
+const migrations = () => fs.readdirSync(MIGRATIONS).filter(f => f.endsWith('.sql')).sort().map(file => ({ file, sql: fs.readFileSync(path.join(MIGRATIONS, file), 'utf8') }));
+
+// A fresh in-memory database with every migration applied; or pass your own `db` (already migrated as far as you like).
+function d1(db) {
+  if (!db) { db = new DatabaseSync(':memory:'); for (const m of migrations()) db.exec(m.sql); }
   const plain = r => (r === undefined ? null : { ...r });
   const stmt = (sql, args = []) => ({
     sql, args,
@@ -21,4 +23,4 @@ function d1() {
     batch: async list => { const out = []; db.exec('BEGIN'); try { for (const s of list) out.push(await s.run()); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; } return out; },
   };
 }
-module.exports = { d1 };
+module.exports = { d1, migrations };

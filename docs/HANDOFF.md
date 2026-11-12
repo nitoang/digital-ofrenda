@@ -7,7 +7,7 @@ check `git log` in case things have moved on.
 
 ```
 Work on the repo nitoang/digital-ofrenda. Read docs/HANDOFF.md first. Then build the remaining suggestions in the order it
-gives: #15 test gaps, #16 housekeeping, #4 deploy workflow, #13 accessibility, #12 receipts and disputes, #17 legal review.
+gives: #4 deploy workflow, #13 accessibility, #12 receipts and disputes, #17 legal review.
 Do one at a time: build it, run the full tests, push to the designated branch (restart it from main first; force-push is
 blocked, so merge the old remote tip with `git merge -s ours` to make the push a fast-forward), then tell me before opening
 a PR. When I say "merge if CI is green", squash-merge only after all CI checks are green on the current head. Never skip or
@@ -25,23 +25,13 @@ loosen a test to get green. Be honest about what you could not verify (for examp
 | 9 | Download-everything export, `GET /me/export` (`server/export.mjs`). |
 | 10 | Successor and inactivity emails (built earlier by other PRs). |
 | 11 | Private ofrendas, `noindex`, `/s/<name>` link previews (`server/preview.mjs`). There is deliberately no "new link" button: an ofrenda's address is its link, so private is how to cut off a leaked one. |
+| 15 | Test gaps: `tests/migrations.test.js` (0001 to 0012 applied in steps with data in place), abuse-path and size-limit tests in `tests/worker.test.js`, more mailer tests. Found and fixed a bug: a Stripe "paid" event arriving after its own refund unlocked the upgrade again. |
+| 16 | Housekeeping: README intro, version `0.9.0`, `CHANGELOG.md`, Dependabot (npm and Actions), a committed `package-lock.json` (CI uses `npm ci`), and an `audit` CI job that also runs weekly. Publishing `ofrenda.js` as a package was left out on purpose: the licence is all rights reserved and `package.json` is `private`. |
 | 14 | Browser tests run in Chromium, Firefox and WebKit in CI. |
 
 ## Still to build, in the order to do them
 
-### 1. #15 Test gaps
-- The mailer has only a handful of tests (`tests/mailer.test.js`).
-- Missing: abuse-path tests (rate limits, replayed webhooks), migration-upgrade tests that apply
-  `server/migrations/0001` to `0012` in steps with data in place, and size and load limits.
-- The Worker tests run the real SQL on SQLite (`tests/d1.js`, which applies every migration on start-up).
-
-### 2. #16 Housekeeping
-- The README still opens with "Phase 1 prototype".
-- The version is still `0.1.0` (`package.json`).
-- There is no Dependabot, no `npm audit` step and no CHANGELOG.
-- Publishing `ofrenda.js` as a package for reuse is optional.
-
-### 3. #4 Deploy workflow
+### 1. #4 Deploy workflow
 - Today there is only `server/wrangler.example.toml`. `mailer/wrangler.toml` is committed.
 - Order: apply migrations, deploy the mailer, deploy the API Worker, then Pages (build `npm run build:site`, output
   directory `site`).
@@ -54,21 +44,21 @@ loosen a test to get green. Be honest about what you could not verify (for examp
   `HEARTBEAT_URL`, `STARTER_OFRENDA`.
 - Also: the R2 bucket binding `PHOTOS`, and the Turnstile site key in `site/config.js`.
 - The owner must add Cloudflare API credentials to the repository's GitHub secrets; an assistant cannot.
-- CI job names the workflow already has: `test`, `browser (chromium)`, `browser (firefox)`, `browser (webkit)`.
+- CI job names the workflow already has: `test`, `audit`, `browser (chromium)`, `browser (firefox)`, `browser (webkit)`.
 
-### 4. #13 Accessibility
+### 2. #13 Accessibility
 - Already in place: an `aria-live` status area, keyboard actions for items, an `assertLabelled` browser test, and
   reduced-motion support for the candle animation.
 - Still to do: a screen-reader pass over the drag-and-drop alternatives, colour contrast, focus order on the site pages,
   and a mobile touch pass. The two real-touch tests run in Chromium only.
 
-### 5. #12 Receipts and disputes
+### 3. #12 Receipts and disputes
 - The `purchases` table holds `payment_intent`, `feature`, `reference` and `refunded_at`. It does not record who bought.
 - Only a full `charge.refunded` is handled (`server/billing.mjs`). Partial refunds are ignored. Disputes and chargebacks
   are not handled.
 - To add: a purchase-history page, and handling for `charge.dispute.*` events.
 
-### 6. #17 Legal review
+### 4. #17 Legal review
 - `site/privacy.html` and `site/terms.html` exist. They were updated as features landed, but have not had a legal read.
 - Check them against what is stored now: visit counts, hashed view-share records, hashed mail-suppression records,
   handovers, job runs, and photos in R2. The contact address in use is `support@digifrenda.duelokit.com`.
@@ -89,13 +79,14 @@ loosen a test to get green. Be honest about what you could not verify (for examp
   (`tests/r2.js`) written from Cloudflare's documentation, never against the real service.
 
 ## Known gaps and caveats
+- The test database wrapper (`tests/d1.js`) has one connection, so overlapping `batch` calls collide. Tests that need true simultaneity (a burst of sign-in requests for one address, where the count-then-insert check could let a few past the 5-an-hour limit) cannot be written against it; the Cloudflare rate-limit rule is the real stop there.
 - Nothing caps the total size of an ofrenda's photos (each is about 300 KB, an ofrenda holds up to 200 items). Photos are
   not scanned.
 - Moving existing inline photos into R2 happens at 25 ofrendas a day, so a large database takes a while.
 - An owner is not told when an invitation or a shared link bounced.
 - A Chromium hang in CI happened twice early on and was never explained. It has not recurred since the test harness was
   hardened (hard-closing connections, closing browser contexts, per-test and per-job timeouts).
-- CI job names changed when the browser matrix arrived. Update any required-checks rule if the repository has one.
+- CI has a new job named `audit`; the weekly schedule runs only that job. CI job names changed when the browser matrix arrived. Update any required-checks rule if the repository has one.
 
 ## How the repo and the workflow behave
 

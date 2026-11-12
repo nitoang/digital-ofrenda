@@ -7,7 +7,7 @@ const { solidPng } = require('./helpers');
 const { d1 } = require('./d1');
 const { fakeR2 } = require('./r2');
 
-console.error = () => {}; // the Worker logs server-side problems; keep test output readable
+console.error = process.env.PROBE ? console.error : () => {};
 
 const ORIGIN = 'https://ofrenda.test';
 const png = () => 'data:image/png;base64,' + solidPng(2, 2, 200, 10, 10).toString('base64');
@@ -2573,4 +2573,208 @@ test('photo store: the move never overwrites a save made while it was reading, a
   assert.ok(stored('aaaaaaaaaaa2').includes('data:image'), 'the failed one is left as it was, safe');
   assert.ok(!stored('aaaaaaaaaaa3').includes('data:image'), 'the next one moved');
   assert.equal((await (await t.call('GET', '/healthz', { origin: null })).json()).dailyJob.status, 'failed', 'and the failure is visible');
+});
+
+// ---------- abuse paths and load limits ----------
+
+const rawPost = (t, path, body, headers = {}) => t.call('POST', path, { body, origin: null, headers });
+
+test('abuse: every body size limit holds, whatever the Content-Length header claims', async () => {
+  const t = await setup(WITH_HOOK);
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  const big = 'x'.repeat(2_000_000);
+  // Stripe (1 MB) and Resend (200 KB) webhooks: refused before any signature work.
+  assert.equal((await rawPost(t, '/stripe/webhook', big, { 'stripe-signature': t.sign(big) })).status, 400);
+  assert.equal((await rawPost(t, '/resend/webhook', 'x'.repeat(250_000))).status, 400);
+  // A header that lies about the size does not get a large body through: the stream is counted too.
+  const stream = bytes => new ReadableStream({ start(c) { for (let i = 0; i < bytes; i += 100_000) c.enqueue(new TextEncoder().encode('x'.repeat(100_000))); c.close(); } });
+  const lie = await t.w.createHandler({ now: t.now, mailer: { send: async () => {} }, defer: () => {} })(new Request('https://api.test/auth/start', {
+    method: 'POST', headers: { origin: ORIGIN, 'content-length': '10' }, body: stream(1_000_000), duplex: 'half' }), t.env);
+  assert.equal(lie.status, 413, 'a streamed body over the limit is refused even though the header said 10');
+  // Small JSON endpoints stop at 10 KB, the ofrenda at its own limit.
+  for (const [path, who] of [['/auth/code', null], ['/ofrendas/' + id + '/invites', maria], ['/ofrendas/' + id + '/share', maria], ['/checkout', maria]]) {
+    const r = await t.call('POST', path, { body: JSON.stringify({ pad: 'x'.repeat(20_000) }), cookie: who?.cookie });
+    assert.equal(r.status, 413, path);
+  }
+  assert.equal((await maria.call('PUT', `/ofrendas/${id}`, 'x'.repeat(t.w.MAX_BODY_BYTES + 1))).status, 413);
+});
+
+test('abuse: odd JSON shapes never reach the logic: arrays, nulls, numbers and deep nesting get a plain 400', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  for (const path of ['/auth/start', '/auth/code', '/auth/redeem']) {
+    for (const body of ['[]', 'null', '7', '"text"', 'true', '{', '', '{"a":'.repeat(500)]) {
+      assert.equal((await t.call('POST', path, { body })).status, 400, `${path} ${body.slice(0, 12)}`);
+    }
+  }
+  for (const body of ['[]', 'null', '7', '{"items":"no"}', '{"items":{"length":5}}']) {
+    assert.equal((await maria.call('PUT', `/ofrendas/${id}`, body)).status, 400, body);
+  }
+  assert.equal((await t.call('POST', '/auth/start', { body: { method: ['code'], email: 'a@example.com' } })).status, 400);
+  assert.equal((await t.call('POST', '/auth/start', { body: { method: 'code', email: { toString: 'x' } } })).status, 400);
+  assert.equal((await t.call('POST', '/auth/code', { body: { challenge: { a: 1 }, code: '123456' } })).status, 400);
+  assert.equal((await t.call('POST', '/auth/code', { body: { challenge: 'x', code: ['123456'] } })).status, 400);
+  assert.equal((await t.call('POST', '/auth/redeem', { body: { token: ['a'] } })).status, 400);
+});
+
+test('abuse: the hourly sign-in limit follows the person, not the spelling of the address, and not other people', async () => {
+  const t = await setup();
+  const start = email => t.call('POST', '/auth/start', { body: { method: 'code', email } });
+  for (const spelling of ['victim@example.com', 'Victim@Example.com', ' VICTIM@example.com ', 'victim@EXAMPLE.COM', 'victim@example.com', 'ViCtIm@example.com', 'victim@example.com']) await start(spelling);
+  assert.equal((await t.mailTo('victim@example.com')).length, 5, 'seven spellings, five emails');
+  await start('other@example.com');
+  assert.equal((await t.mailTo('other@example.com')).length, 1, 'one address being flooded does not block another');
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM login_challenges WHERE email = ?').get('victim@example.com').n, 5, 'and the refused ones left no row behind');
+});
+
+test('abuse: guessing codes cannot go on forever: a wrong guess is counted even when the challenge is unknown or expired', async () => {
+  const t = await setup();
+  const guess = (challenge, code) => t.call('POST', '/auth/code', { body: { challenge, code } });
+  assert.equal((await guess('does-not-exist', '123456')).status, 400);
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM login_challenges').get().n, 0, 'guessing at made-up challenges creates nothing');
+  const { challenge } = await (await t.call('POST', '/auth/start', { body: { method: 'code', email: 'maria@example.com' } })).json();
+  const real = /(\d{6})/.exec((await t.mailTo('maria@example.com'))[0].subject)[1];
+  const wrong = real === '000000' ? '000001' : '000000';
+  for (let i = 0; i < t.RULES.codeAttempts; i++) assert.equal((await guess(challenge, wrong)).status, 400);
+  t.tick(HOUR);
+  assert.equal((await guess(challenge, real)).status, 400, 'right code, but late and out of attempts');
+  // Guesses made at the same moment still add up to the limit.
+  const second = await (await t.call('POST', '/auth/start', { body: { method: 'code', email: 'maria@example.com' } })).json();
+  const real2 = /(\d{6})/.exec((await t.mailTo('maria@example.com')).at(-1).subject)[1];
+  const answers = await Promise.all(Array.from({ length: 20 }, (_, i) => guess(second.challenge, String(100000 + i).padStart(6, '0'))));
+  assert.ok(answers.every(r => r.status === 400));
+  assert.equal(t.db.prepare('SELECT attempts FROM login_challenges WHERE challenge_id = ?').get(second.challenge).attempts <= t.RULES.codeAttempts + 1, true, 'the counter stops near the limit');
+  assert.equal((await guess(second.challenge, real2)).status, 400, 'after a flood of guesses the real code no longer works');
+});
+
+test('abuse: made-up, truncated, padded and repeated cookies sign nobody in', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const value = /=([\w-]{43})/.exec(maria.cookie)[1];
+  for (const cookie of [
+    '', '__Host-session=', `__Host-session=${value.slice(1)}`, `__Host-session=${value}x`, `__Host-session=${value.toUpperCase()}`,
+    `session=${value}`, `x__Host-session=${value}`, `__Host-session=${'a'.repeat(43)}`, `__Host-session=${value}%00`, `__Host-session=${value.slice(0, 42)}!`,
+  ]) {
+    assert.equal((await t.call('GET', '/me', { cookie })).status, 401, JSON.stringify(cookie));
+  }
+  assert.equal((await t.call('GET', '/me', { cookie: `other=1; __Host-session=${value}; more=2` })).status, 200, 'among other cookies it is found');
+  assert.equal((await t.call('GET', '/me', { cookie: `__Host-session=${'a'.repeat(43)}; __Host-session=${value}` })).status, 401, 'the first one counts, so a planted cookie cannot swap an account');
+});
+
+test('abuse: a replayed Stripe event (the same signed body again) never grants twice or undoes a refund', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  const paid = paidPI({ client_reference_id: id }, 'pi_replay');
+  const sig = t.sign(paid);
+  const post = () => t.call('POST', '/stripe/webhook', { body: paid, origin: null, headers: { 'stripe-signature': sig } });
+  const count = () => ({ features: t.db.prepare('SELECT COUNT(*) n FROM features').get().n, purchases: t.db.prepare('SELECT COUNT(*) n FROM purchases').get().n });
+  for (let i = 0; i < 3; i++) assert.equal((await post()).status, 200);
+  assert.deepEqual(count(), { features: 1, purchases: 1 }, 'three deliveries of one event, one upgrade, one record');
+  assert.equal((await deliver(t, refund('pi_replay'))).status, 200);
+  assert.equal(count().features, 0);
+  // Stripe retries on its own schedule, so a delivery of the "paid" event can arrive after the refund. Inside the
+  // five-minute window the old signature still verifies. That must not hand the upgrade back for free.
+  assert.equal((await post()).status, 200);
+  assert.equal(count().features, 0, 'paid event arriving after its own refund unlocks nothing');
+  t.tick(6 * MIN);
+  assert.equal((await post()).status, 400, 'and once it is stale it is refused outright');
+});
+
+test('abuse: a refund that arrives before its payment event is remembered, so the late payment event unlocks nothing', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  assert.equal((await deliver(t, refund('pi_early', { metadata: { feature: 'sevenTiers', reference: id } }))).status, 200);
+  assert.equal((await deliver(t, paidPI({ client_reference_id: id }, 'pi_early'))).status, 200);
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM features').get().n, 0);
+  assert.ok(t.db.prepare('SELECT refunded_at FROM purchases WHERE payment_intent = ?').get('pi_early').refunded_at);
+  // A different payment for the same thing is a new purchase and does unlock it.
+  assert.equal((await deliver(t, paidPI({ client_reference_id: id }, 'pi_second'))).status, 200);
+  assert.equal(t.db.prepare('SELECT COUNT(*) n FROM features').get().n, 1);
+});
+
+test('abuse: the Resend webhook caps how many addresses one event can suppress, and a rotated secret still verifies', async () => {
+  const t = await setup(WITH_HOOK);
+  const many = Array.from({ length: 80 }, (_, i) => `user${i}@example.com`);
+  assert.equal((await svix(t, bounced(many[0]))).status, 200);
+  await svix(t, { type: 'email.bounced', data: { to: many, bounce: { type: 'Permanent' } } }, { id: 'msg_many' });
+  assert.ok(t.db.prepare('SELECT COUNT(*) n FROM mail_suppressions').get().n <= 50, 'one event cannot blank out the whole address book');
+  for (const odd of [{ type: 'email.bounced', data: { to: 'not-a-list', bounce: { type: 'Permanent' } } }, { type: 'email.bounced', data: { to: [null, 5, {}, 'nope', ''], bounce: { type: 'Permanent' } } }, { type: 'email.bounced' }, { type: 'email.bounced', data: null }, null]) {
+    assert.equal((await svix(t, odd, { id: 'msg_odd' })).status, 200, 'odd payloads are acknowledged, not retried forever');
+  }
+  assert.ok(t.db.prepare('SELECT COUNT(*) n FROM mail_suppressions').get().n <= 50);
+  // During a secret rotation Svix sends two signatures; either one is enough, a header with none valid is not.
+  const body = JSON.stringify(bounced('rotating@example.com'));
+  const { verifySvix } = await import('../server/mailhealth.mjs');
+  const mac = secret => crypto.createHmac('sha256', Buffer.from(secret.replace('whsec_', ''), 'base64')).update(`id_1.${Math.floor(t.now() / 1000)}.${body}`).digest('base64');
+  const head = sig => ({ id: 'id_1', timestamp: String(Math.floor(t.now() / 1000)), signature: sig });
+  const old = 'whsec_' + Buffer.from('old-secret').toString('base64');
+  assert.equal(await verifySvix(head(`v1,${mac(old)} v1,${mac(WEBHOOK_SECRET)}`), body, WEBHOOK_SECRET, t.now()), true);
+  assert.equal(await verifySvix(head(`v1,${mac(WEBHOOK_SECRET)} v1,${mac(old)}`), body, WEBHOOK_SECRET, t.now()), true);
+  assert.equal(await verifySvix(head(`v1,${mac(old)}`), body, WEBHOOK_SECRET, t.now()), false);
+  assert.equal(await verifySvix(head(`v2,${mac(WEBHOOK_SECRET)}`), body, WEBHOOK_SECRET, t.now()), false, 'only v1 signatures count');
+  assert.equal(await verifySvix(head(''), body, WEBHOOK_SECRET, t.now()), false);
+});
+
+test('limits: 200 items fit, 201 do not; a too-large state is refused whole, and nothing half-saved is left', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  const items = n => Array.from({ length: n }, (_, i) => ({ id: `n${i}`, type: 'note', x: 50, y: 50, text: 'n'.repeat(80) }));
+  const stored = () => t.db.prepare('SELECT state FROM altars WHERE id = ?').get(id).state;
+  assert.equal((await maria.json('PUT', `/ofrendas/${id}`, altar(...items(200)))).status, 200);
+  const before = stored();
+  assert.equal(JSON.parse(before).items.length, 200);
+  const over = await maria.json('PUT', `/ofrendas/${id}`, altar(...items(201)));
+  assert.deepEqual([over.status, over.body.error], [413, 'too_many_items']);
+  assert.equal(stored(), before, 'a refused save changes nothing');
+  // Unknown item types are dropped, so they cannot be used to smuggle size in.
+  const junk = Array.from({ length: 5000 }, (_, i) => ({ id: `j${i}`, type: 'rootkit', pad: 'x'.repeat(200) }));
+  const mixed = await maria.json('PUT', `/ofrendas/${id}`, altar(...items(3)));
+  assert.equal(mixed.status, 200);
+  assert.equal((await maria.json('PUT', `/ofrendas/${id}`, altar(...junk))).status, 413, 'thousands of unknown items still count against the item limit');
+  // Long text is cut, not stored.
+  assert.equal(JSON.parse(stored()).items.every(i => i.text.length <= 80), true);
+  await maria.json('PUT', `/ofrendas/${id}`, { ...altar(...items(2)), name: 'N'.repeat(5000), dates: 'D'.repeat(5000) });
+  const saved = JSON.parse(stored());
+  assert.ok(saved.name.length <= 80 && saved.dates.length <= 80);
+  assert.ok(stored().length < 5000);
+});
+
+test('limits: the largest allowed ofrenda (200 photos) is refused if it would not fit in a database row, and photos beyond the free count need the upgrade', async () => {
+  const t = await setup();
+  const maria = await t.signIn('maria@example.com');
+  const id = await t.altarFor(maria);
+  await t.store.grantFeature(t.env.DB, id, 'extraPhotos', t.now());
+  const photo = bigPhoto();
+  const bunch = n => Array.from({ length: n }, (_, i) => frame(`p${i}`, photo));
+  const stored = () => t.db.prepare('SELECT state FROM altars WHERE id = ?').get(id).state;
+  const ok = await maria.json('PUT', `/ofrendas/${id}`, altar(...bunch(5)));
+  assert.equal(ok.status, 200);
+  const before = stored();
+  const huge = await maria.json('PUT', `/ofrendas/${id}`, altar(...bunch(8)));
+  assert.equal(huge.status, 413, 'without a bucket, photos live in the row, so the whole-state cap applies');
+  assert.equal(huge.body.error, 'too_large');
+  assert.equal(stored(), before);
+  assert.ok(before.length <= 1_500_000);
+});
+
+test('limits: many people at once - saves to different ofrendas do not mix, and saves to one ofrenda leave one valid winner', async () => {
+  const t = await setup();
+  const people = [], ids = [];
+  for (let i = 0; i < 12; i++) { people.push(await t.signIn(`person${i}@example.com`)); ids.push(await t.altarFor(people[i])); }
+  await Promise.all(people.map((p, i) => p.call('PUT', `/ofrendas/${ids[i]}`, { ...altar(), name: `Ofrenda ${i}` })));
+  for (let i = 0; i < people.length; i++) assert.equal((await (await t.call('GET', `/ofrendas/${ids[i]}`, { cookie: people[i].cookie })).json()).name, `Ofrenda ${i}`);
+  // Twelve people hitting one shared ofrenda: every save succeeds and the stored state is exactly one of them, never a blend.
+  const shared = ids[0];
+  for (const p of people.slice(1)) t.db.prepare("INSERT INTO altar_members (altar_id, user_id, role, added_at) VALUES (?, ?, 'keeper', 0)").run(shared, p.id);
+  const results = await Promise.all(people.map((p, i) => p.call('PUT', `/ofrendas/${shared}`, { ...altar(frame(`f${i}`, png())), name: `Version ${i}` })));
+  assert.ok(results.every(r => r.status === 200));
+  const final = JSON.parse(t.db.prepare('SELECT state FROM altars WHERE id = ?').get(shared).state);
+  assert.match(final.name, /^Version \d+$/);
+  assert.equal(final.items.length, 1);
+  assert.equal(final.items[0].id, `f${final.name.split(' ')[1]}`, 'name and items come from the same save');
 });
