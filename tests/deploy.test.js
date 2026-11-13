@@ -117,6 +117,38 @@ test('deploy workflow: runs the tests first, then migrations, the mailer, the AP
   assert.match(fs.readFileSync(path.join(root, '.gitignore'), 'utf8'), /^server\/wrangler\.toml$/m, 'the rendered config is never committed');
 });
 
+test('pages project: found in Wrangler\'s list however it is formatted, and "already exists" is recognised', async () => {
+  const { hasProject, alreadyExists } = await lib('pages-project.mjs');
+  assert.equal(hasProject('[{"name":"site-a"},{"name":"digital-ofrenda-site"}]', 'digital-ofrenda-site'), true);
+  assert.equal(hasProject('[{"Project Name":"digital-ofrenda-site"}]', 'digital-ofrenda-site'), true);
+  assert.equal(hasProject('⛅️ wrangler 4\n[{"name":"digital-ofrenda-site"}]\n', 'digital-ofrenda-site'), true, 'banner text around the JSON is ignored');
+  assert.equal(hasProject('[{"name":"digital-ofrenda-site-2"}]', 'digital-ofrenda-site'), false, 'only an exact name counts');
+  for (const bad of ['', 'not json', '[]', '{"name":"digital-ofrenda-site"}', '[{"name":', null, undefined]) assert.equal(hasProject(bad, 'digital-ofrenda-site'), false, String(bad));
+  assert.equal(alreadyExists('✘ [ERROR] A project with this name already exists. Choose a different name. [code: 8000002]'), true);
+  assert.equal(alreadyExists('Authentication error [code: 10000]'), false);
+  assert.equal(alreadyExists(''), false);
+});
+
+test('pages project: the helper exits 0 when the project is listed and 1 when it is not', async () => {
+  const { spawnSync } = require('node:child_process');
+  const run = (args, input) => spawnSync(process.execPath, [path.join(root, 'scripts', 'pages-project.mjs'), ...args], { input, encoding: 'utf8' }).status;
+  assert.equal(run(['has', 'mine'], '[{"name":"mine"}]'), 0);
+  assert.equal(run(['has', 'mine'], '[{"name":"other"}]'), 1);
+  assert.equal(run(['already-exists'], 'already exists'), 0);
+  assert.equal(run(['already-exists'], 'boom'), 1);
+  assert.equal(run(['nonsense'], ''), 2);
+});
+
+test('deploy workflow: creates a direct-upload Pages project when missing, before anything else changes, with the production branch main', () => {
+  const yml = fs.readFileSync(path.join(root, '.github', 'workflows', 'deploy.yml'), 'utf8');
+  const step = ['Write the API Worker\'s config', 'Create the Pages project if it does not exist yet', 'Apply database migrations'].map(s => yml.indexOf(s));
+  assert.ok(step.every(i => i >= 0), 'a step is missing');
+  assert.deepEqual([...step].sort((a, b) => a - b), step, 'the Pages project is created before migrations and the Workers');
+  assert.match(yml, /pages project create "\$PAGES_PROJECT" --production-branch main/);
+  assert.match(yml, /pages project list --json \| node scripts\/pages-project\.mjs has "\$PAGES_PROJECT"/);
+  assert.doesNotMatch(yml, /pages project create[^\n]*\|\| true/, 'a real failure must stop the deploy');
+});
+
 test('contact: every page offers the same support address, and the mailer replies go to it', () => {
   const read = f => fs.readFileSync(path.join(root, f), 'utf8');
   const address = /mailto:([^"?]+)/.exec(read('site/terms.html'))[1];

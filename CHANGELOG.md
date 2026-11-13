@@ -5,6 +5,7 @@ All notable changes. The format follows [Keep a Changelog](https://keepachangelo
 ## Unreleased
 
 ### Added
+- The deploy workflow creates the Pages project when it does not exist yet (`scripts/pages-project.mjs`), before migrations and the Workers, so that step needs no dashboard work.
 - A **Contact** link in every page footer, and the support address on the privacy and terms pages is now `support@duelokit.com`, a mailbox that receives mail.
 - `MAIL_REPLY_TO` on the mailer: replies to any email we send go to the support mailbox instead of the sending address. Optional; set by the Worker, never by the caller.
 
