@@ -139,3 +139,23 @@ test('mailer routes: only POST /send; HEAD, PUT, DELETE and look-alike paths are
     assert.equal(r.status, 404, path);
   }
 });
+
+test('mailer adds the reply address from its own settings, and never from the caller', async () => {
+  let body;
+  const grab = async (u, init) => (body = JSON.parse(init.body), res(200));
+  await send({ ...good, reply_to: 'evil@x.test' }, { ...env, MAIL_REPLY_TO: ' support@example.com ' }, grab);
+  assert.deepEqual(body.reply_to, ['support@example.com'], 'trimmed, and the caller\'s own reply_to is ignored');
+  assert.deepEqual(Object.keys(body).sort(), ['from', 'reply_to', 'subject', 'text', 'to']);
+  await send(good, env, grab);
+  assert.ok(!('reply_to' in body), 'no setting, no header');
+});
+
+test('mailer: a bad MAIL_REPLY_TO is left out and the email is still sent', async () => {
+  for (const bad of ['not an address', 'a@x.test, b@x.test', 'Support <s@x.test>', '  ', 42]) {
+    let body, errors = [];
+    const original = console.error; console.error = m => errors.push(m);
+    try { assert.equal((await send(good, { ...env, MAIL_REPLY_TO: bad }, async (u, init) => (body = JSON.parse(init.body), res(200)))).status, 200); }
+    finally { console.error = original; }
+    assert.ok(!('reply_to' in body), `sent with ${JSON.stringify(bad)}`);
+  }
+});

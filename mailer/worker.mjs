@@ -3,7 +3,8 @@
 // It has no public route (workers_dev = false), so nobody on the internet can make it send mail.
 //
 // Settings: RESEND_API_KEY (secret), MAIL_FROM (for example "digital-ofrenda <hello@your-domain>",
-// on a domain verified in Resend, with SPF and DKIM set up).
+// on a domain verified in Resend, with SPF and DKIM set up), MAIL_REPLY_TO (optional: where replies go, for example
+// "support@your-domain"; it may be on a different domain from MAIL_FROM, so it must be a mailbox that receives mail).
 
 // A temporary failure (the provider is unreachable, rate-limiting us, or has an error of its own) is retried a couple of
 // times with a short pause. Every attempt for one message carries the same Idempotency-Key, so a retry after a
@@ -16,6 +17,15 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 
 const EMAIL = /^[^\s@,;<>"]{1,64}@[^\s@,;<>"]{1,255}$/;
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+// Where a person's reply to any of our emails goes (MAIL_REPLY_TO, optional, any domain). Fixed by the Worker, never by the
+// caller. A value that is not one plain address is logged and left out: mail still goes out, just without a reply address.
+const replyTo = env => {
+  const to = typeof env.MAIL_REPLY_TO === 'string' ? env.MAIL_REPLY_TO.trim() : '';
+  if (!to) return {};
+  if (!EMAIL.test(to)) { console.error('MAIL_REPLY_TO is not a plain email address; sending without it'); return {}; }
+  return { reply_to: [to] };
+};
 
 export const handle = async (request, env, fetchImpl = fetch, sleep = wait) => {
   const url = new URL(request.url);
@@ -33,7 +43,7 @@ export const handle = async (request, env, fetchImpl = fetch, sleep = wait) => {
   const init = {
     method: 'POST',
     headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() },
-    body: JSON.stringify({ from: env.MAIL_FROM, to: [to], subject, text }),
+    body: JSON.stringify({ from: env.MAIL_FROM, to: [to], subject, text, ...replyTo(env) }),
   };
   let status = 0; // 0: could not reach the provider at all
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {

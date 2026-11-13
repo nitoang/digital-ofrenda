@@ -2,6 +2,12 @@
 
 All notable changes. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each entry ends with the pull request that made it. Before 0.9.0 nothing was versioned; the sections below group the history by what it added.
 
+## Unreleased
+
+### Added
+- A **Contact** link in every page footer, and the support address on the privacy and terms pages is now `support@duelokit.com`, a mailbox that receives mail.
+- `MAIL_REPLY_TO` on the mailer: replies to any email we send go to the support mailbox instead of the sending address. Optional; set by the Worker, never by the caller.
+
 ## 0.9.0 - 2026-11-11
 
 Feature complete and covered by tests, but not yet deployed: the owner-only setup in [docs/HANDOFF.md](docs/HANDOFF.md) is still to do.

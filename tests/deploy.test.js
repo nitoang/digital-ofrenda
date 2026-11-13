@@ -116,3 +116,15 @@ test('deploy workflow: runs the tests first, then migrations, the mailer, the AP
   assert.match(fs.readFileSync(path.join(root, '.github', 'workflows', 'test.yml'), 'utf8'), /workflow_call:/);
   assert.match(fs.readFileSync(path.join(root, '.gitignore'), 'utf8'), /^server\/wrangler\.toml$/m, 'the rendered config is never committed');
 });
+
+test('contact: every page offers the same support address, and the mailer replies go to it', () => {
+  const read = f => fs.readFileSync(path.join(root, f), 'utf8');
+  const address = /mailto:([^"?]+)/.exec(read('site/terms.html'))[1];
+  for (const f of ['index.html', 'deleted.html', 'privacy.html', 'terms.html']) {
+    const page = read('site/' + f);
+    assert.ok(new RegExp(`<footer class="foot">[^]*<a href="mailto:${address}[^"]*">Contact</a>`).test(page), `${f} has no Contact link in its footer`);
+    assert.deepEqual([...new Set([...page.matchAll(/mailto:([^"?]+)/g)].map(m => m[1]))], [address], `${f} mixes contact addresses`);
+  }
+  assert.ok(read('site/ui.js').includes(`mailto:${address}`), 'the shared footer (site/ui.js) uses a different address');
+  assert.match(read('mailer/wrangler.toml'), new RegExp(`^MAIL_REPLY_TO = "${address}"`, 'm'), 'replies do not go to the printed address');
+});
