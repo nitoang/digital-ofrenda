@@ -8,6 +8,7 @@ enabled = true
 
 [vars]
 MAIL_FROM = "Digifrenda <hello@digifrenda.duelokit.com>"
+MAIL_REPLY_TO = "support@duelokit.com"   # replies land in the support mailbox (Cloudflare Email Routing)
 
 # Secret (never commit it). Add it in the dashboard (Worker > Settings > Variables and Secrets) or with:
 #   npx wrangler secret put RESEND_API_KEY

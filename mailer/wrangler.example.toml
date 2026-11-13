@@ -5,6 +5,8 @@ workers_dev = false               # no public address: only the API Worker can c
 
 [vars]
 MAIL_FROM = "digital-ofrenda <hello@REPLACE-WITH-YOUR-VERIFIED-DOMAIN>"
+# Where replies to our emails go (optional, any domain, must be a mailbox that receives mail):
+# MAIL_REPLY_TO = "support@REPLACE-WITH-YOUR-DOMAIN"
 
 # Secret (never commit it):
 #   npx wrangler secret put RESEND_API_KEY

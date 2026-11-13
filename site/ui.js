@@ -36,7 +36,9 @@ export function frame(me, ...content) {
 }
 
 export function footer() {
-  return h('footer', { class: 'foot' }, link('Privacy', '/privacy'), link('Terms', '/terms'));
+  // A plain mailto: (not link(), which only accepts same-site paths). Keep this address the same as the static pages' footers.
+  return h('footer', { class: 'foot' }, link('Privacy', '/privacy'), link('Terms', '/terms'),
+    h('a', { href: 'mailto:support@duelokit.com?subject=Digifrenda%20help' }, 'Contact'));
 }
 
 // A message area that screen readers announce.

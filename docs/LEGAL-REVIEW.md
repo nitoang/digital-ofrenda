@@ -13,7 +13,7 @@ The two pages were checked against the code on 2026-11-12 and corrected where th
   not invented one.
 - **Governing law and where disputes are heard.** The terms say nothing.
 - **Which rules apply to which visitors** (where they live, where you are, where the data sits). Not decided, not stated.
-- **A response time** for data requests. The privacy page says "ask us" at `support@digifrenda.duelokit.com` and gives no
+- **A response time** for data requests. The privacy page says "ask us" at `support@duelokit.com` and gives no
   time or way to confirm who is asking.
 
 ## What is stored
