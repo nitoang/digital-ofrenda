@@ -1,6 +1,6 @@
 # Deploys to Cloudflare, in the order that keeps a half-finished deploy harmless:
-#   1. the same tests as every pull request   2. database migrations   3. the mailer Worker (the API Worker calls it)
-#   4. the API Worker   5. the website (Pages)   6. a smoke test of the live site
+#   1. the same tests as every pull request   2. the Pages project is created if missing, then database migrations
+#   3. the mailer Worker (the API Worker calls it)   4. the API Worker   5. the website (Pages)   6. a smoke test of the live site
 # Nothing happens until the repository variable DEPLOY_ENABLED is "true", so merging to main is safe before setup is
 # done. Setup, variables and secrets: README, "Deploying with GitHub Actions".
 name: Deploy
@@ -68,6 +68,21 @@ jobs:
         run: |
           npx --yes "$WRANGLER" secret list --config server/wrangler.toml | node scripts/check-secrets.mjs TURNSTILE_SECRET STRIPE_WEBHOOK_SECRET STRIPE_SECRET_KEY RESEND_WEBHOOK_SECRET || true
           npx --yes "$WRANGLER" secret list --config mailer/wrangler.toml | node scripts/check-secrets.mjs RESEND_API_KEY || true
+
+      # The Pages project is created here when it is missing, before anything else changes, so a token without the Pages
+      # permission fails now and not after the Workers are already live. It is a direct-upload project (not connected to
+      # Git), which is what the website step's direct upload needs. Nothing happens when it already exists.
+      - name: Create the Pages project if it does not exist yet
+        run: |
+          if npx --yes "$WRANGLER" pages project list --json | node scripts/pages-project.mjs has "$PAGES_PROJECT"; then
+            echo "Pages project $PAGES_PROJECT already exists."
+          elif out=$(npx --yes "$WRANGLER" pages project create "$PAGES_PROJECT" --production-branch main 2>&1); then
+            echo "$out"; echo "Created the Pages project $PAGES_PROJECT."
+          else
+            echo "$out"
+            if echo "$out" | node scripts/pages-project.mjs already-exists; then echo "Pages project $PAGES_PROJECT already exists."
+            else echo "::error::Could not create the Pages project $PAGES_PROJECT (does the API token have the Cloudflare Pages: Edit permission?)"; exit 1; fi
+          fi
 
       # Migrations first. They must stay compatible with the Worker that is still running until step 4.
       - name: Apply database migrations
