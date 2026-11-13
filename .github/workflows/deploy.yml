@@ -46,7 +46,7 @@ jobs:
       TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
       PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v4
